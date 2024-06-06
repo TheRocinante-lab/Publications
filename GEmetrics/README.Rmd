@@ -1,0 +1,207 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
+
+# GEmetrics
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+The goal of GEmetrics is to provide functions to calculate the best linear unbiased prediction (BLUP) of the following genotype-by-environment (GE) metrics: ecovalence, environmental variance, Finlay and Wilkinson regression and Lin and Binns superiority measure, based on a multi-environment genomic prediction model.
+
+## Installation
+
+You can install GEmetrics directly from the CRAN:
+
+``` r
+install.packages(pkg='GEmetrics',repos='https://cran.r-project.org/')
+```
+
+or from GitHub:
+
+``` r
+install.packages(pkg='devtools',repos='https://cran.r-project.org/')     ## install devtools
+devtools::install_git('https://github.com/TheRocinante-lab/GEmetrics')   ## install GEmetrics from GitHub
+```
+
+## Example
+
+This is a basic example which shows you how to calculate the BLUP of GE metrics. 
+
+#### Simulate phenotypic data
+
+Multi-environment trial data is first simulated based on the "wheat" dataset from BGLR. 
+
+A design data frame is generated displaying all combinations of genotypes and environments. 
+Some combinations are discarded to set sparseness in the data (75% here).
+
+```{r}
+## Set seed for reproductibility
+set.seed(123)
+
+## Load "wheat" dataset from BGLR
+data("wheat",package = "BGLR")
+
+## Generate a design data frame for all genotypes in 5 environments
+Design <- expand.grid(Genotype=rownames(wheat.A),Environment=paste0("Env",1:5))
+
+## Set sparseness by discarding 75% of the combinatons
+Design <- Design[-sample(nrow(Design),round(nrow(Design)*3/4)),]
+head(Design)
+```
+
+Phenotypes are then simulated using trait and environments parameters: 
+
+* h2: heritability, either a single value for a heritability common to all environments (e.g. 0.5 in the example below), or a vector of heritabilities associated with each environment 
+* rho: genetic correlations between environment pairs, either a single value for a genetic correlation common to all environment pairs (e.g. 0.5 in the example below), or a square correlation matrix
+* sd_mu: standard deviation of the Gaussian distribution in which environment means are drawn (e.g. 1 in the example below)
+
+```{r}
+## Simulate phenotypic data with default parameter values
+DataSim <- GEmetrics::Simulate_MET_data(Design=Design,K=wheat.A,h2=0.5,rho=0.5,sd_mu=1)
+```
+
+The resulting DataSim object include:
+
+(i) Pheno: data frame with simulated phenotypes
+
+```{r}
+## Simulated phenotypes
+head(DataSim$Pheno)
+```
+
+(ii) EnvBV: matrix of simulated environment-specific breeding values
+
+```{r}
+## Simulated environment-specific breeding values
+head(DataSim$EnvBV)
+```
+
+(iii) Omega_G: genetic covariance matrix between environments
+
+```{r}
+## Genetic covariance matrix between environments
+DataSim$Omega_G
+```
+
+(iv) Omega_E: error covariance matrix between environments
+
+```{r}
+## Error covariance matrix between environments
+DataSim$Omega_E
+```
+
+#### Estimate variance components using BGLR
+
+From simulated data, variance components can be estimated using an inference 
+method like [BGLR](https://github.com/gdlc/BGLR-R), or any other methods able to 
+infer Omega_G and Omega_E. 
+
+First, the phenotypic data frame must be transformed into a phenotypic response matrix.
+
+```{r}
+## Generate the phenotypic response matrix for BGLR and the corresponding K matrix
+BGLR_data <- GEmetrics::BGLR_format(Pheno=DataSim$Pheno,K=wheat.A)
+head(BGLR_data$BGLR_pheno)
+```
+
+The inference can be done using the "Multitrait" function of BGLR to estimate the
+Omega_G and Omega_E covariance matrices. Note that the current CRAN version of BGLR 
+(October 2023) may lead to an issue when the phenotypic data is very sparse, but
+not the most recent GitHub version.
+
+```{r}
+## Run BGLR inference
+ETA<-list(list(K=BGLR_data$BGLR_K,model="RKHS"))
+BGLR_results <- BGLR::Multitrait(y=BGLR_data$BGLR_pheno,ETA=ETA,
+                                 resCov=list(type="DIAG"),
+                                 nIter=1000,burnIn=500,verbose = F,saveAt = "Test_")
+unlink(c("Test_R.dat","Test_Omega_1.dat","Test_mu.dat"))
+Omega_G <- BGLR_results$ETA[[1]]$Cov$Omega
+Omega_E <- BGLR_results$resCov$R
+rownames(Omega_E) <- rownames(Omega_E) <- rownames(Omega_G)
+```
+
+The estimate of the genetic covariance matrix Omega_G is:
+
+```{r}
+Omega_G
+```
+
+and the estimate of the error covariance matrix Omega_E is:
+
+```{r}
+Omega_E
+```
+
+
+#### Calculate BLUP and conditional variance of environment-specific breeding values
+
+The BLUP and the conditional variance of environment-specific breeding values can 
+be calculated from the phenotypes and the variance component estimates. 
+Note that the BLUPs could also be obtained directly from BGLR outputs.
+
+```{r}
+## Calculate BLUP and conditional variance
+BlupEnvBV <- GEmetrics::EnvBV_blup(Pheno=DataSim$Pheno,K=wheat.A,Omega_G=Omega_G,Omega_E=Omega_E)
+```
+
+The BLUPs obtained:
+
+```{r}
+head(BlupEnvBV$G_hat)
+```
+
+and the conditional variance matrix:
+
+```{r}
+BlupEnvBV$P[1:5,1:5]
+```
+
+#### Obtain GE metrics estimates
+
+Each GE metric can be estimated using the complete BLUP involving both
+the squared expectation and the variance term:
+
+```{r}
+metrics <- c("Ecovalence","EnvironmentalVar","FinlayWilkRegression","LinBinns")
+GEmetrics_hat_geno_exp_var <- sapply(metrics,function(m)
+  GEmetrics::GEmetrics_blup(G_hat=BlupEnvBV$G_hat,metric=m,P=BlupEnvBV$P))
+head(GEmetrics_hat_geno_exp_var)
+```
+or using the partial BLUP including the the squared expectation only:
+
+```{r}
+metrics <- c("Ecovalence","EnvironmentalVar","FinlayWilkRegression","LinBinns")
+GEmetrics_hat_geno_exp <- sapply(metrics,function(m)
+  GEmetrics::GEmetrics_blup(G_hat=BlupEnvBV$G_hat,metric=m))
+head(GEmetrics_hat_geno_exp)
+```
+
+Estimated can be compared to the true GE metric values obtained from simulated environment-specific 
+breeding values using the correlation:
+
+```{r}
+GEmetrics_true <- sapply(metrics,function(m)GEmetrics::GEmetrics_blup(G_hat=DataSim$EnvBV,metric=m,P=NULL))
+data.frame("Geno_Exp_Var" = diag(cor(GEmetrics_hat_geno_exp_var,GEmetrics_true)),
+           "Geno_Exp" = diag(cor(GEmetrics_hat_geno_exp,GEmetrics_true)))
+```
+
+or the root mean-square error of estimation:
+
+```{r}
+data.frame("Geno_Exp_Var" = sqrt(colMeans((GEmetrics_hat_geno_exp_var-GEmetrics_true)^2)),
+           "Geno_Exp" = sqrt(colMeans((GEmetrics_hat_geno_exp-GEmetrics_true)^2)))
+
+```

@@ -1,0 +1,18 @@
+Package: GEmetrics
+Title: Best Linear Unbiased Prediction of Genotype-by-Environment Metrics
+Version: 1.0.0
+Authors@R: c(
+    person("Simon", "Rio", , "simon.rio@cirad.fr", role = c("aut", "cre"),comment = c(ORCID = "0000-0001-7014-8789")),
+    person("Humberto Fanelli", "Carvalho", role = "aut",comment = c(ORCID = "0000-0003-0745-7583")),
+    person("Julio", "Isidro y Sanchez", role = "aut",comment = c(ORCID = "0000-0002-9044-3221"))
+  )
+Description: Provides functions to calculate the best linear unbiased prediction of genotype-by-environment metrics: ecovalence, environmental variance, Finlay and Wilkinson regression and Lin and Binns superiority measure, based on a multi-environment genomic prediction model, as presented in Carvalho et al. (2023) <doi>.
+License: GPL (>= 3)
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
+Imports: 
+    stats,
+    BGLR
+Depends: R (>= 3.6.0)
