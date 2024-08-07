@@ -4,7 +4,7 @@ Authors: Javier Fernández-González, Julio Isidro-Sánchez
 
 Contents:
 
-Vignette0: Example on the different kinds of two stage models that can be fit to multi-environment trials with open-source software. 
+Vignette0: Example of the different kinds of two stage models that can be fit to multi-environment trials with open-source software. 
 Here, we showcase and compare the single stage model, an unweighted two-stage model and four different types of weighted two-stage models.
 
 Vignette1: Replication of the Vignette1 from StageWise R package using open-source software. Single trait models without genotype by environment interactions.
