@@ -1,0 +1,479 @@
+---
+title: "Vignette 0: Different Types of Fully Efficient Models"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette 0: Different Types of Fully Efficient Models}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning = FALSE)
+```
+
+
+
+
+Libraries for open source:
+```{r}
+library(matrixcalc) #for direct sum operator
+library(sommer) #for modelling
+```
+
+
+# Introduction
+
+
+In this vignette we will show how different types of fully-efficient, two stage genomic selection models can be fitted to a dataset. We will also compare them to their equivalent unweighted and single stage models. To that end, we will use a simulated dataset:
+
+
+```{r}
+load("GmatOat.RData")
+load("SimulData.RData")
+
+#True variance values from the simulation
+variance_components <- data.frame("True", 
+              SimulResults$SampleLocVar, 
+              SimulResults$SampleAdditiveVar,
+              SimulResults$SampleGresVar)
+
+#True breeding values from the simulation
+TBV <- SimulResults$AdditiveValues
+```
+
+
+This data contains a simulated augmented randomized complete block design within five locations. This design is sparse for each location, i.e. only some checks are replicated across blocks within each field, but most genotypes are unreplicated. Conversely, all genotypes are fully replicated across locations. In the simulation, we have simulated the phenotype as the sum of additive and non-additive genetic effects, a location effect, spatial variation within each field and some additional random noise. 
+
+We will fit models that account for all of these terms except the non-additive one. The reason for this, is that we want to compare the performance of the different models when they are a simplification of reality, which is usually the case when working with empirical data. We will start with the most standard methodology (single stage, unweighted two stage) and later we will move into the fully-efficient two stage models. For all models we will store the estimates of the variance components and the genomic estimated breeding values (GEBVs), which can be compared to the true ones (known because the data was simulated). This will allow us to evaluate the quality of each model.
+
+Finally, it is important to keep in mind that this is just a single iteration of the simulation, making the results obtained here just tentative. In the main paper we have performed 500 repetitions, making the results much more reliable.
+
+
+# Single Stage Model
+
+Modelling all effects in a single stage is considered to be the best approach, but it has a larger computational cost than the two stage alternatives, which can make it unfeasible for industrial-scale datasets. The model used in this work is the following:
+
+$$
+\boldsymbol{y} = \mu + Z_e \boldsymbol{u_e} + Z_a \boldsymbol{u_a} + Z_p \boldsymbol{u_p} + \boldsymbol{\epsilon}
+$$
+
+Where $\boldsymbol{y}$ is a vector of simulated phenotypes. $\mu$ is the fixed intercept. $\boldsymbol{u_e} \sim N(\boldsymbol{0}, I\sigma^2_e)$ is a vector of environmental random effects. $\boldsymbol{u_a} \sim N(\boldsymbol{0}, G\sigma^2_a)$ is a vector of additive genotypic random effects. $\boldsymbol{u_p}$ is a vector of random spatial effects following the 2D p-splines framework and nested within the environment. $\boldsymbol{\epsilon} \sim N(\boldsymbol{0}, I\sigma^2_\epsilon)$ is a vector of residuals. $Z_e$, $Z_a$, and $Z_\epsilon$ are the design matrices of their corresponding effects and $G$ is the VanRaden additive genomic relationship matrix. One important consideration about the residuals in this model is that they only contain the nugget (true error) from the simulation, which was specified to have the same variance in all environments. Therefore, we can use homogeneous residuals across environments for the model, but heterogeneous residuals are common when working with empirical datasets.
+
+
+
+    
+    
+```{r}
+iter = 1
+SingleStageDF <- SimulResults[["AugmentedRCBD_Book"]]
+
+
+SingleStageDF$Rowf <- as.factor(SingleStageDF$Row)
+SingleStageDF$Colf <- as.factor(SingleStageDF$Col)
+SingleStageDF$GIDres <- SingleStageDF$GID
+
+head(SingleStageDF)
+
+
+Nrows <- length(unique(SingleStageDF$Row))
+Ncols <- length(unique(SingleStageDF$Col))
+
+
+#Fit model
+#This can be a bit slow
+SingleStageModel <- mmer(Pheno ~ 1, #Intercept is only fixed effect
+       random = ~vsr(Env) + #environment
+         vsr(GID, Gu = Ga) + #additive
+         #Spatial effects are split into two main effects and an interaction term:
+         vsr(dsr(Env),Rowf)+ #main effect for row within each environment
+         vsr(dsr(Env),Colf)+ #main effect for column within each environment
+         #Interaction effect between rows and columns within each environment:
+         #Use splines, which allow to fit more coefficients than datapoints
+         #available thanks to the use of a penalization:
+         spl2Da(Col,Row, at.var=Env, 
+           #Number of Segments for splines around half of the number of rows or columns
+           nsegments = c(6,16), 
+           #half the number of segments for the smooth by smooth interaction (faster computations)
+           nestorder = c(2,2)), 
+       rcov=~vsr(units), #homogeneous residuals across locations
+       data= SingleStageDF,
+       verbose = FALSE
+  )
+
+#Variance values from single stage model
+tmp <- c("Single_Stage", 
+              SingleStageModel$sigma$`u:Env`, 
+              SingleStageModel$sigma$`u:GID`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#Genomic estimated breeding values from single stage model
+GEBVs_SingleStage <- SingleStageModel$U$`u:GID`$Pheno
+```
+
+
+# Two Stage Models
+
+All two stage models have a common first stage, but they differ on how the second stage is implemented. Thus, we will first run the first stage models:
+
+## First Stage Model
+
+A different stage 1 model is fit to each environment independently:
+
+
+$$
+\boldsymbol{y_j} = X_j \boldsymbol{\beta_j} + Z_j \boldsymbol{u_{p_j}}  + \boldsymbol{\epsilon_j}
+$$
+
+Where $\boldsymbol{y_j}$ contains the phenotypic observations in environment $j$; $\boldsymbol{\beta_j}$ is a vector of fixed genotypic effects and $X_j$ is its corresponding design matrix; $\boldsymbol{u_{p_j}}$ is a vector of random spatial effects following the 2D P-splines framework  and $Z_{p_j}$ is its corresponding design matrix; $\boldsymbol{\epsilon_j} \sim N(\boldsymbol{0}, I\sigma^2_{\epsilon_j})$ is a vector of residuals. $I$ is the identity matrix of appropriate dimensions and $\sigma^2_{\epsilon_j}$ is the residual variance component.
+
+From this model, we can obtain BLUEs for the fixed genotypic effects ($\boldsymbol{\hat{\beta}_j}$), which can be regarded as adjusted phenotypes without the spatial effects of the field. We can also calculate their associated error variance-covariance, which can be used as a matrix of weights. These will be carried on to the second stage. For the sake of clarity, we will call the variance-covariance associated to stage 1 genotypic BLUEs the estimation error variance-covariance matrix ($EEV$). The genotypic BLUEs of the models from the different environments will be concatenated together to be used as input for second stage models and the $EEV$ matrices will be merged though their direct sum.
+
+```{r}
+#Stage 1
+#one model per environment
+models <- list()
+BLUEs <- c()
+EEVs <- list()
+Envs <- c()
+H2 <- c()
+residuals <- data.frame()
+
+print("First Step")
+
+#One model per environment
+for (env in rownames(SimulResults$Evcov)) {
+  phenoDF <- SimulResults[["AugmentedRCBD_Book"]]
+  phenoenv <- phenoDF[phenoDF$Env == env,]
+  
+  #Keep track of the environments for which we are making the models
+  Envs <- c(Envs, rep(env, length(unique(phenoenv$GID))))
+  
+  #Prepare data
+  phenoenv$Block <- factor(phenoenv$Block) #cofactor
+  phenoenv$Rowf <- as.factor(phenoenv$Row)
+  phenoenv$Colf <- as.factor(phenoenv$Col)
+  rownames(phenoDF) <- NULL
+
+#Fit stage 1 model
+  models[[env]] <- mmer(Pheno~GID -1, #fixed genotypic effects, no intercept
+         #Spatial effects are split into two main effects and an interaction term:
+         random = ~Rowf+Colf+ #main effects for row and column
+         #Interaction effect between rows and columns:
+         #Use splines, which allow to fit more coefficients than datapoints
+         #available thanks to the use of a penalization:
+         spl2Da(Col,Row, 
+           #Number of Segments for splines around half of the number of rows or columns
+           nsegments = c(6,16), 
+           #half the number of segments for the smooth by smooth interaction (faster computations)
+           nestorder = c(2,2)), 
+         data=phenoenv, 
+         verbose = FALSE
+          )
+ 
+  EEV <- models[[env]]$VarBeta
+  rownames(EEV) <- colnames(EEV) <- 
+    gsub(pattern = "^GID", replacement = "", x = models[[env]]$Beta$Effect)
+
+  
+  #keep only the BLUEs for the id fixed effect
+  #Concatenate the BLUEs from the models for each environment
+  placeholder <- names(BLUEs)
+  BLUEs <- c(BLUEs, models[[env]]$Beta$Estimate)
+  names(BLUEs) <- c(placeholder,
+                    gsub(pattern = "^GID", replacement = "", x = models[[env]]$Beta$Effect))
+  
+  #Store EEV matrix for each environment
+  EEVs[[env]] <- EEV
+}
+
+
+#merge EEV matrices from each environmet for their use in the second stage
+#It is done using the direct sum operator from matrixcalc library
+placeholder_matrix <- matrix()
+for (i in 2:length(unique(phenoDF$Env))) {
+  env1 <- unique(phenoDF$Env)[i-1]
+  env2 <- unique(phenoDF$Env)[i]
+  EEV1 <- EEVs[[env1]]
+  rownames(EEV1) <- paste0(rownames(EEV1), ":", env1)
+  EEV2 <- EEVs[[env2]]
+  rownames(EEV2) <- paste0(rownames(EEV2), ":", env2)
+  if (sum(is.na(placeholder_matrix)) > 0) {
+    placeholder_matrix <- direct.sum(EEV1,EEV2)
+  } else {
+    placeholder_matrix <- direct.sum(placeholder_matrix,EEV2)
+  }
+}
+EEV_full <- placeholder_matrix
+#remove "GID" at the beginning of the rownames (added by sommer)
+rownames(EEV_full) <- gsub("^GID", "",rownames(EEV_full))
+colnames(EEV_full) <- rownames(EEV_full)
+dim(EEV_full)
+length(BLUEs)
+```
+## Unweighted Second Stage Model
+
+This model the first stage BLUEs as a response variable but it does not consider $EEV$ at all, therefore giving the same weight to all observations regardless of how confident we are on the quality of their estimation:
+
+$$
+\boldsymbol{\hat{\beta}_{all}} = \mu + Z_e \boldsymbol{u_e} + Z_a \boldsymbol{u_a} + \boldsymbol{\epsilon}
+$$
+
+Where  the $\boldsymbol{\hat{\beta}_{all}}$ genotypic BLUEs from the first stage models are the response variable and all other terms are the same as the effects with the same name in the single stage model.
+
+```{r}
+#Open source
+#1) Prepare data
+sommerdf <- data.frame(BLUEs = BLUEs,
+                               id = names(BLUEs),
+                               Env = Envs)
+
+#fit model
+Stage2ModelUnweighted <- mmer(BLUEs ~ 1, #only fixed effect is intercept
+                                    random = ~vsr(Env)+ #random environmental effect
+                                      vsr(id, Gu = Ga), #additive effect
+                                    rcov=~vsr(units), #iid residuals
+                                    data= sommerdf,
+                                    verbose = FALSE
+)
+
+#Variance values from unweighted two stage model
+tmp <- c("Unweighted", 
+              Stage2ModelUnweighted$sigma$`u:Env`, 
+              Stage2ModelUnweighted$sigma$`u:id`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#genomic estimated breeding values from unweighted two stage model
+GEBVs_Unweighted <- Stage2ModelUnweighted$U$`u:id`$BLUEs
+```
+## Fully Efficient Second Stage Models
+
+These models are similar to the previous one but they also consider the EEV matrix. However, there are several ways to take EEV into account. It can be used as the covariance matrix for the residuals or for a random effect. Furthermore, it is possible to use the entire EEV matrix or the off-diagonals can be discarded to accelerate computations. In the latter case, it is important to note that, in the mixed models, the EEV matrix is not used directly. Instead, its inverse is of interest. Therefore, to minimize the loss of information, the off-diagonals of $EEV$ only have to be discarded after inverting it.
+
+
+### Fully Efficient Second Stage, Full EEV in residuals
+
+This model has the following equation:
+
+$$
+\boldsymbol{\hat{\beta}_{all}} = \mu + Z_e \boldsymbol{u_e} + Z_a \boldsymbol{u_a} + \boldsymbol{\epsilon}
+$$
+Where all terms are the same as for the unweighted second stage model with the exception of the residuals. $EEV$ is included as the variance-covariance matrix of the residuals: $\boldsymbol{\epsilon} \sim N(\boldsymbol{0}, EEV)$. One important thing to note is that the variance component of the residuals has to be fixed, as it is already known from the first stage models that its variance-covariance matrix is $EEV$. We don't want the model to estimate a residual variance component that scales $EEV$ to a different value. The main problem of this type of model is its inability to account for any terms not explicitly modeled in fixed or random effects. As the residuals are constrained to follow $EEV$, they can only fit the true error generated in the first stage models. For instance, we have not explicitly modeled non-additive genetic effects in the model, which is a problem since they cannot be absorbed by the residuals (the covariance structure of the non-additive genetic effects does not match $EEV$ and therefore the model cannot fit these effects into the residuals). Thus, we only recommend including $EEV$ into the residuals if you are completely certain that all meaningful effects have been explicitly model in fixed or random effects.
+
+
+```{r}
+#Prepare data
+#we need to add to our data a column for stage 1 estimation error 
+Stage1Error <- paste0(sommerdf$id,":",sommerdf$Env)
+identical(rownames(EEV_full), Stage1Error)
+    
+sommerdf <- cbind(sommerdf,
+                      Stage1Error)
+
+#sommer convention
+#all variances are stored relative to the variance of the response variable
+Variance_scaled <- as.matrix(1/var(sommerdf$BLUEs))
+
+#fit model
+Stage2ModelFullResid <- mmer(BLUEs ~ 1, 
+     random = ~vsr(Env)+ #random environmental effect
+       vsr(id, Gu = Ga), #additive effect
+     rcov=~vsr(units, #residuals.
+               Gti = Variance_scaled, #provide variance component to be equal to 1
+               #i.e., don't let the model alter EEV by scaling it with a variance
+               #component different from one.
+               Gtc = matrix(3)), #Disable estimation of residual component, i.e.
+               #use the value provided in Gti = Variance_scaled
+     data= sommerdf,
+     W=solve(EEV_full), #Here we set the inverse of EEV to be the matrix of weights.
+     #This means that we are setting EEV to be the covariance matrix of the residuals.
+     verbose = FALSE
+)
+
+
+#Variance values from fully efficient, two stage model, full EEV in residuals
+tmp <- c("FullResid", 
+              Stage2ModelFullResid$sigma$`u:Env`, 
+              Stage2ModelFullResid$sigma$`u:id`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#genomic estimated breeding values from two stage model with full EEV in residuals
+GEBVs_FullResid <- Stage2ModelFullResid$U$`u:id`$BLUEs
+```
+
+
+### Fully-Efficient Second Stage, Diagonal EEV in residuals
+
+This model is exaclty the same as the previous one but we remove the off-diagonals of the inverse of EEV to accelerate computations: 
+
+```{r}
+#Prepare data
+EEV_inv_diag <- diag(solve(EEV_full))
+names(EEV_inv_diag) <- rownames(EEV_full)
+sommerdf$Weights = EEV_inv_diag
+
+#sommer convention
+#all variances are stored relative to the variance of the response variable
+Variance_scaled <- as.matrix(1/var(sommerdf$BLUEs))
+
+#fit model
+Stage2ModelDiagResid <- mmer(BLUEs ~ 1, 
+     random = ~vsr(Env)+ #random environmental effect
+       vsr(id, Gu = Ga), #additive effect
+     rcov=~vsr(units, #residuals.
+               Gti = Variance_scaled, #provide variance component to be equal to 1
+               #i.e., don't let the model alter EEV by scaling it with a variance
+               #component different from one.
+               Gtc = matrix(3)), #Disable estimation of residual component, i.e.
+               #use the value provided in Gti = Variance_scaled
+     data= sommerdf,
+     weights=Weights, #Here we set the diagonal of the inverse of EEV to be the vector of weights.
+     #This means that we are setting the inverse of the residual covariance matrix to be equal to
+     #the diagonal of the inverse of EEV
+     verbose = FALSE
+)
+
+
+#Variance values from fully efficient, two stage model, diagonal EEV in residuals
+tmp <- c("DiagResid", 
+              Stage2ModelDiagResid$sigma$`u:Env`, 
+              Stage2ModelDiagResid$sigma$`u:id`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#genomic estimated breeding values from two stage model with diagonal EEV in residuals
+GEBVs_DiagResid <- Stage2ModelDiagResid$U$`u:id`$BLUEs
+```
+
+
+
+### Fully-Efficient Second Stage, Full EEV in random effect
+
+This model has the following equation:
+
+$$
+\boldsymbol{\hat{\beta}_{all}} = \mu + Z_e \boldsymbol{u_e} + Z_a \boldsymbol{u_a} + Z_s \boldsymbol{u_s} + \boldsymbol{\epsilon}
+$$
+
+The same nomenclature as in previous models has been used where applicable. $\boldsymbol{u_s} \sim N(\boldsymbol{0}, EEV)$ is the random effect for the stage 1 error and it contains the true error. As happened in the previous models, no variance component for the stage 1 error term is estimated as it is already implicitly included within $EEV$. In this model, $\boldsymbol{\epsilon} \sim N(\boldsymbol{0}, I\sigma^2_\epsilon)$, i.e. there are i.i.d. residuals that give more flexibility to the model. For instance, we have not explicitly modeled non-additive genetic effects in the model and they can be absorbed by the residuals. 
+
+
+
+```{r}
+#fit model
+Stage2ModelFullRaneff <- mmer(BLUEs ~ 1, 
+     random = ~vsr(Env)+ #random environmental effect
+       vsr(id, Gu = Ga)+ #additive effect
+       vsr(Stage1Error, #first stage error term
+           Gti = Variance_scaled, #unit variance value
+           Gtc = matrix(3), #disable variance estimation (the model will be forced
+           #to use the value provided in Gti argument)
+           Gu = EEV_full), #EEV variance-covariance matrix
+     rcov=~vsr(units), #iid residuals
+     data= sommerdf, 
+     verbose = FALSE
+)
+
+#Variance values from fully efficient, two stage model, full EEV in random effect
+tmp <- c("FullRaneff", 
+              Stage2ModelFullRaneff$sigma$`u:Env`, 
+              Stage2ModelFullRaneff$sigma$`u:id`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#genomic estimated breeding values from two stage model with full EEV in random effect
+GEBVs_FullRaneff <- Stage2ModelFullRaneff$U$`u:id`$BLUEs
+```
+
+
+### Fully-Efficient Second Stage, Diagonal EEV in random effect
+
+The same model as before has been used, but the off-diagonal elements of the inverse of EEV have been discarded to allow for faster computations.
+
+
+```{r}
+EEV_diag <- matrix(0, nrow = nrow(EEV_full), ncol = ncol(EEV_full))
+rownames(EEV_diag) <- colnames(EEV_diag) <- rownames(EEV_full)
+#1) Invert EEV (solve() function)
+#2) Discard off-diagonals of the inverse (diag() function extracts only the diagonal)
+#3) Invert again to undo the first inversion (1/diagonal elements, as the matrix
+#is diagonal its inverse can be done this way)
+#This allows us to get a diagonal EEV matrix that, when inverted, is equal to 
+#the diagonal of the inverse of the full EEV matrix, i.e. we have been able to 
+#discard the off-diagonals of EEV after the inversion
+#We want to discard them after the inversion because what the models actually
+#use is the inverse of the covariance matrices. Therefore, discarding data before
+#inverting will result in increased information loss
+diag(EEV_diag) <- 1/(diag(solve(EEV_full)))
+
+
+#fit model
+Stage2ModelDiagRaneff <- mmer(BLUEs ~ 1, 
+     random = ~vsr(Env)+ #random environmental effect
+       vsr(id, Gu = Ga)+ #additive effect
+       vsr(Stage1Error, #first stage error term
+           Gti = Variance_scaled, #unit variance value
+           Gtc = matrix(3), #disable variance estimation (the model will be forced
+           #to use the value provided in Gti argument)
+           Gu = EEV_diag), #diagonal of EEV as variance-covariance matrix
+     rcov=~vsr(units), #iid residuals
+     data= sommerdf, 
+     verbose = FALSE
+)
+
+#Variance values from fully efficient, two stage model, diagonal EEV in random effect
+tmp <- c("DiagRaneff", 
+              Stage2ModelDiagRaneff$sigma$`u:Env`, 
+              Stage2ModelDiagRaneff$sigma$`u:id`,
+              NA)
+variance_components <- rbind(variance_components, tmp)
+
+#genomic estimated breeding values from two stage model with diagonal EEV in random effect
+GEBVs_DiagRaneff <- Stage2ModelDiagRaneff$U$`u:id`$BLUEs
+```
+
+
+
+# Results
+
+Now, we will compare the results from the different models. Please, keep in mind that these results are based on a single repetition of a simulation and therefore they are just orientative. In the main paper we have the results for 500 iterations.
+
+
+## Variance Components
+
+```{r}
+#Some formatting:
+rownames(variance_components) <- NULL
+colnames(variance_components) <- c("Model",
+                                   "Environment",
+                                   "Additive",
+                                   "Non_Additive")
+variance_components$Environment <- round(as.numeric(variance_components$Environment),2)
+variance_components$Additive <- round(as.numeric(variance_components$Additive),2)
+variance_components$Non_Additive <- round(as.numeric(variance_components$Non_Additive),2)
+print(variance_components)
+```
+
+All models overestimate additive variance. This is expected, as in the simulation there was a very substantial non-additive variance that has not been included in any of the models. Therefore, some of the non_additive variance was absorbed by the additive term. Furthermore, noise can also be absorbed by the additive term, further increasing its variance. Much better estimates of the additive variance could be obtained with models that included a term for non-additive variance.
+
+The main highlight from this results is that the models with EEV in the residuals ("FullResid", "DiagResid") had a much more over-inflated additive variance than the rest. The reason for this is that all other models had i.i.d. residuals able to capture part of the non-additive variance, precluding it from being wrongly included into the additive term. However, in "FullResid" and "DiagResid" the EEV in the residuals constrained them, and it did not allow them to capture the non-additive effects. As a result, the non-additive effects did not fit in any of the terms of the "FullResid" and "DiagResid", causing them to break down and having a very poor fit.
+
+From this, we can conclude that we should only include EEV in the residuals if we are confident that all terms influencing the phenotype have been explicitly modeled in fixed or random effects. In general, including EEV in a random effect is much safer.
+
+## Accuracy
+
+```{r}
+cor(TBV, GEBVs_SingleStage[names(TBV)]) #Single Stage
+cor(TBV, GEBVs_Unweighted[names(TBV)]) #Unweighted two stage
+
+cor(TBV, GEBVs_FullResid[names(TBV)]) #Two stage, full EEV in residuals
+cor(TBV, GEBVs_DiagResid[names(TBV)]) #Two stage, diagonal EEV in residuals
+
+cor(TBV, GEBVs_FullRaneff[names(TBV)]) #Two stage, full EEV in random effects
+cor(TBV, GEBVs_DiagRaneff[names(TBV)]) #Two stage, diagonal EEV in random effects
+```
+As expected, the models with EEV in residuals performed poorly due to the reasons outlined in the previous section. Conversely, the models with EEV in a random effect achieved the best accuracy. Single stage and unweighted models a slightly worse performance than the models with EEV in a random effect. This was expected for the unweighted model, but it is unexpected for the single stage model, as it should be in theory the best performing one. However, the differences between single stage, unweighted and fully efficient with EEV in the residuals are very small and we cannot conclude if their differences are significant with a single repetition of the simulation.
+
+In the main paper we performed 500 repetitions, which confirmed the poor performance of the models with EEV in the residuals. Furthermore, single stage models and models with EEV in a random effect were not significantly different, showcasing the robustness of fully efficient models. In contrast, the unweighted model was significantly worse than the single stage, which is in line with our initial expectations.
