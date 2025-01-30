@@ -1,0 +1,1054 @@
+---
+title: "Vignette 2: Single trait analysis at correlated locations"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{StageWise Vignette2}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning = FALSE)
+```
+
+
+Libraries for open source:
+```{r}
+library(Matrix) #all StageWise models in the vignettes work for Matrix package 
+#version 1.5-1. Later versions may cause errors in some of the StageWise models
+library(lme4)
+library(matrixcalc)
+library(sommer)
+library(pracma)
+library(ggplot2)
+library(StageWise)
+#load("Vignette2Models.RData")
+```
+
+
+If you cite this work, **it is important that you also cite the StageWise package (Endelman, J. B., 2023)**. For more information about the fully efficient two-stage modeling strategy, we recommend reading Damesa et al. (2017)
+
+
+This vignette builds upon the information provided in [Vignette 1](https://jendelman.github.io/StageWise/Vignette1.html), which covers analysis at a single location. This vignette illustrates how to model the covariance between multiple locations using a dataset of potato yield trials across 8 locations (TX was excluded) and 6 years, with a population of 336 genotypes ([Schmitz Carley et al. 2019](https://doi.org/10.2135/cropsci2018.05.0314)).
+
+To understand this vignette, familiarity with factor analytics methodology for exploring location-by-environment interactions is important. Let's assume the following model for Stage 2:
+
+$$
+BLUEs = \boldsymbol{y} = X\boldsymbol{E} + Z\boldsymbol{g} + Z_{gl}\boldsymbol{gl} + \boldsymbol{s} + \boldsymbol{\epsilon}
+$$
+
+Where $BLUEs = \boldsymbol{y}$ is a vector of stage 1 genotypic BLUEs (BLUEs of different environments are concatenated), $\boldsymbol{E}$ is a vector of fixed environmental effects, $\boldsymbol{g} \sim N(\boldsymbol{0}, I\sigma^2_g)$ is a vector of random genotypic effects, $\boldsymbol{gl} \sim N(\boldsymbol{0}, GxL\sigma^2_{gl})$, $\boldsymbol{s} \sim N(\boldsymbol{0}, EEV)$ is a vector of random Stage 1 estimation errors, and $\boldsymbol{\epsilon} \sim N(\boldsymbol{0}, I\sigma^2_{\epsilon})$ is a vector of residuals that correspond to genotype by environment interaction unexplained by the other terms. $X$, $Z$, and $Z_{gl}$ are design matrices for their corresponding effects. $\sigma^2_g$, $\sigma^2_{gl}$, and $\sigma^2_{\epsilon}$ are the genotypic, genotype by location interaction, and residual variances, respectively. $I$ is an identity matrix with the appropriate dimensions. $EEV$ is the matrix of estimation error variance-covariance of the BLUEs. Finally, $GxL = L \otimes G$ is the variance-covariance matrix for the genotype by location interaction. $G$ is the variance-covariance structure for the genotypes (the additive relationship matrix if available, the identity otherwise). $L$ is a variance-covariance structure across locations that must be estimated by the model.
+
+Various variance-covariance structures for $L$ can be assumed (diagonal, compound symmetry, unstructured, etc.). Here, we will focus on unstructured, which is extremely versatile as it independently calculates all variances and covariances. Therefore, the number of parameters to estimate scales with the square of the number of locations. This can be problematic as a large number of parameters to estimate for a large number of locations can cause convergence issues.
+
+
+
+Factor analytics attempts to solve this problem through dimensionality reduction. At its core, the aim of factor analytics is to replace the $L$ matrix with a smaller $FA$ matrix that carries almost as much information, massively reducing the number of parameters to estimate. There are a few ways to achieve this, and ASReml and Sommer use two different approaches. That way, we expect different results from these packages.
+
+
+
+```{r}
+geno.file <- system.file("vignette_data", "geno2.csv", package = "StageWise")
+geno <- read_geno(filename=geno.file,ploidy=4,map=FALSE,dominance=TRUE)
+
+pheno.file <- system.file("vignette_data", "pheno2.csv", package = "StageWise")
+pheno <- read.csv(pheno.file)
+head(pheno)
+table(pheno$loc)
+``` 
+
+The input file contains not only a column named 'env' for environment but also one named 'loc' for location. While the location information is not explicitly used by `Stage1`, it is automatically detected and retained in the output for use in `Stage2`.
+
+```{r, fig.width=4, fig.height=3}
+#StageWise
+ans1 <- Stage1(filename=pheno.file, traits='Yield.Mg.ha')
+head(ans1$blues)
+
+
+ggplot(data=ans1$fit,aes(x=loc,y=H2)) + 
+  stat_boxplot(outlier.color="red") + 
+  xlab("Location") + 
+  ylab(expression(paste("Broad-sense ",H^2," (plot basis)")))
+
+
+
+
+
+#Open source
+#one model per environment
+models <- list()
+BLUEs <- c()
+EEVs <- list()
+Envs <- c()
+H2 <- c()
+residuals <- data.frame()
+Locs <- c()
+for (enviro in unique(pheno$env)) {
+  phenoenv <- pheno[pheno$env == enviro,]
+  #1) remove entries with missing values for yield
+  phenoenv <- phenoenv[!is.na(phenoenv$Yield.Mg.ha),]
+  
+  Envs <- c(Envs, rep(enviro, length(unique(phenoenv$id))))
+  loc <- unique(phenoenv$loc)
+  Locs <- c(Locs, rep(loc, length(unique(phenoenv$id))))
+  
+  phenoenv$id <- factor(phenoenv$id)
+  
+# Remove the intercept in the model!
+# It's important for correct EEV calculation.
+# We use lm() instead of lmer() because we don't have any random effects.
+  models[[enviro]] <- lm(Yield.Mg.ha ~ -1 + id,
+                        data=phenoenv)
+
+
+  #extract H2
+  #random effect variances
+  variance_residual <- sigma(models[[enviro]])^2
+  
+  #fixed effect variances
+  #1) calculate design matrix
+  X.id <- model.matrix(Yield.Mg.ha~id-1, data=phenoenv) #remove intercept.
+  
+  #calculate fixed effects for each plot
+  #id effects:
+  # y = Xb + ... + epsilon
+  # b (vector of the genotypic fixed effects) can be retrieved from:
+  #"models[[enviro]]@beta[1:length(unique(phenoenv$id))]"
+  # X is the design matrix linking each observation (each plot in the field) with
+  # its corresponding genotypic effect.
+  id_effects <- X.id%*%models[[enviro]]$coefficients[1:length(unique(phenoenv$id))]
+
+  #calculate variance for the fixed effects
+  id_variance <- var(id_effects)
+  
+  #Plot level heritability
+  H2 <- c(H2, id_variance/(id_variance +
+                       variance_residual) )
+  
+  
+  #extract residuals
+  resid <- unlist(summary(models[[enviro]])$residuals)
+  expt <- rep(enviro, length(resid))
+  tmp <- data.frame(cbind(expt, resid))
+  residuals <- rbind(residuals, tmp)
+  
+  
+
+  
+  #calculate EEV (estimation error variance-covariance matrix for id effects)
+  #extract EEV from the model
+  EEV_lm <- matrix(summary(models[[enviro]])$cov.unscaled*variance_residual, 
+                     nrow = sqrt(length(summary(models[[enviro]])$cov.unscaled))) 
+  
+  rownames(EEV_lm) <- names(models[[enviro]]$coefficients)
+  colnames(EEV_lm) <- names(models[[enviro]]$coefficients)
+
+  
+  placeholder <- names(BLUEs)
+  BLUEs <- c(BLUEs, models[[enviro]]$coefficients)
+  names(BLUEs) <- c(placeholder, names(models[[enviro]]$coefficients))
+  
+  EEVs[[enviro]] <- EEV_lm
+}
+colnames(residuals) <- c("expt", "resid")
+residuals$resid <- as.numeric(residuals$resid)
+
+
+
+#exactly the same BLUEs
+cor(BLUEs, #lm
+    ans1$blues$BLUE) #StageWise
+BLUEs[1:5]
+ans1$blues$BLUE[1:5]
+
+#Almost exactly the same EEV (differences due to rounding errors)
+differences <- c()
+for (enviro in unique(pheno$env)) {
+  differences <- c(differences, mean(abs(EEVs[[enviro]] - ans1$vcov[[enviro]])))
+}
+differences
+EEVs$NC_2011[1:5,1:5]
+ans1$vcov$NC_2011[1:5,1:5]
+
+
+variance_residual <- sigma(models[["NC_2011"]])^2
+
+#design matrix
+phenoenv <- pheno[pheno$env == "NC_2011",]
+phenoenv <- phenoenv[!is.na(phenoenv$Yield.Mg.ha),]
+X.id <- model.matrix(Yield.Mg.ha~id-1, data=phenoenv) #remove intercept.
+EEVNC11 <- solve(t(X.id)%*%X.id)*variance_residual
+
+sum(abs(EEVs$NC_2011 - EEVNC11)) #the only differences are rounding errors
+
+
+#merge EEV matrices from each environmet for their use in the second stage
+#It is done using the direct sum operator
+placeholder_matrix <- matrix()
+for (i in 2:length(unique(pheno$env))) {
+  env1 <- unique(pheno$env)[i-1]
+  env2 <- unique(pheno$env)[i]
+  if (sum(is.na(placeholder_matrix)) > 0) {
+    placeholder_matrix <- direct.sum(EEVs[[env1]],EEVs[[env2]])
+  } else {
+    placeholder_matrix <- direct.sum(placeholder_matrix,EEVs[[env2]])
+  }
+}
+EEV_full <- placeholder_matrix
+dim(EEV_full)
+length(BLUEs)
+
+
+#Mostly similar heritability estimations
+cor(H2, #lm
+    ans1$fit$H2) #StageWise
+```
+
+The figure above illustrates the variation in broad-sense heritability across locations and years.
+
+When the data frame of BLUEs passed to `Stage2` includes a column labeled 'loc', genotype x location effects are incorporated using a separable covariance structure. The genetic covariance between locations for the highest-order genetic effect (i.e., additive when marker data are included) follows a 2nd order factor-analytic (FA2) model. (For non-additive genetic effects, the correlation is constrained to be 1.) For large datasets with many locations, such as this one, I recommend initially analyzing it without marker data, as computation proceeds more quickly.
+
+Here is a joint analysis of the 8 locations without using the marker data.
+```{r, eval=FALSE}
+#Warning!
+#This works for version 1.5-1 of the Matrix package, but it may fail 
+#if you are using later versions
+ans2a <- Stage2(data=ans1$blues, vcov=ans1$vcov, silent = FALSE)
+```
+
+
+```{r}
+#Open source
+#1) Prepare data
+Stage1Output <- data.frame(BLUEs = BLUEs,
+                       id = names(BLUEs),
+                       Env = Envs,
+                       Loc = Locs)
+Stage1Output$id <- gsub("^id", "",Stage1Output$id) #remove the "id" at the beginning
+#of each genotype name
+
+#We need to add to Stage1Output a column for stage 1 estimation error 
+Stage1Error <- paste0(Stage1Output$id,":",Stage1Output$Env)
+rownames(EEV_full) <- Stage1Error
+colnames(EEV_full) <- Stage1Error
+
+#model:
+#BLUEs = XE + Zg + s + gE
+#We need a column for BLUEs, environment name, genotypic id and stage1error
+sommerdf <- cbind(Stage1Output,
+                  Stage1Error)
+head(sommerdf)
+
+
+# When you want to use a known variance-covariance matrix in Sommer's mmec() function,
+# what you actually have to provide is the inverse of the matrix, and it must be of the
+# "dgCMatrix" class (sparse matrix).
+EEVInv <- as(solve(EEV_full),Class="dgCMatrix")
+
+# Fix the variance for stage1Error to be 1. We have to scale it by dividing it
+# by the variance of the response variable because Sommer works that way.
+# We fix the variance to be 1 because we don't want the model to scale EEV in 
+# any way, but 1 is not the true stage1Error variance component. More on that later.
+Variance_scaled <- as.matrix(1/var(sommerdf$BLUEs))
+
+
+#Factor analytics
+#1) Extract loadings using sommer functions
+FA2LocLoadings <- with(sommerdf, rrc(Loc, #Factor analytics for location
+                                   id, #Variables characterizing each location
+                                   #are the genotypes
+                                   #Gu = geno@G, #I get inversion issues if I use G
+                                   BLUEs, #response variable
+                                   nPC=2, #FA2 --> 2PCs
+                                   returnGamma = TRUE
+                  )) 
+
+
+# 2) You can directly use the sommer loadings, but with this dataset there were
+# matrix inversion issues. To solve them, we can perform a varimax rotation to obtain
+# alternative but equivalent loadings that don't cause inversion issues in the model.
+RotatedLoadings <- varimax(FA2LocLoadings$Gamma)
+# We recommend using the original FA2LocLoadings by default and only using the varimax 
+# rotation if you encounter inversion issues.
+
+# Expand the loading matrix using the locations design matrix.
+# The expanded loadings matrix will be the input to the factor analytics term
+# in the model.
+Zl <- model.matrix(BLUEs~Loc-1, data=sommerdf)
+#FA2Loc <- Zl%*%FA2LocLoadings$Gamma #without rotation
+FA2Loc <- Zl%*%RotatedLoadings$loadings #with rotation
+```
+
+```{r, eval=FALSE}
+#sommer model. It is quite slow
+#If you are using the full dataset, it will probably take a few hours
+ans2a_open <- mmec(BLUEs ~ Env -1, #Fixed effects = Environment. -1 means that
+                     #we remove the intercept (you could leave it if you prefer it)
+                     random = ~vsc(isc(id)) + #vsc() is just an auxiliary function
+                       #used every time you want to specify details for a random
+                       #effect.
+                       #isc(id) means that we assume identity variance-covariance
+                       #structure for the "id" effect (genotypic effect)
+                       vsc(usc(FA2Loc),isc(id)) + #kronecker factor analytics
+                       #matrix (usc(FA2Loc)) with identity for genotypes (isc(id))
+                       #in usc(FA2Loc) we indicate that the 2 factors
+                       #that characterize the locations follow a unstructured
+                       #variance covariance matrix
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                      rcov=~vsc(dsc(Loc),isc(units)), #diagonal loc by i.i.d. residuals
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     nIters=50, #increased number or iterations
+                     #more EM iterations at the beggining for usc models 
+                     emWeight=c(rep(1,10),sommer::logspace(10,1,.05),rep(.05,80)), 
+                     data= sommerdf,
+                     verbose = TRUE
+
+)
+```
+
+```{r}
+#very different aic
+ans2a$aic
+ans2a_open$AIC
+```
+```{r}
+summary(ans2a$vars)
+```
+
+In the single-location analysis, running the `summary` command on the 'vars' output displays the partitioning of variance. In this case, a genotype x location effect is also present. However, because genotype x year effects are often not repeatable and tend to be small, they are not included in the `Stage2` model.
+
+The FA2 model should provide enough complexity for a set of correlated locations used within a single breeding program. However, it may be inadequate when analyzing disparate locations. The factor loadings returned by `Stage2` can be used with the `uniplot` function to visualize the model's sufficiency and correlation structure ([Cullis et al. 2010](https://doi.org/10.1139/G10-080)).
+
+```{r, fig.width=3,fig.height=3}
+# Different uniplot
+# Please note that the uniplot() function belongs to the StageWise package, but 
+# it does not rely on ASReml and can be used without any license.
+uniplot(ans2a$loadings)
+Gamma <- RotatedLoadings$loadings
+uniplot(Gamma, nudge = 0.3)
+
+# The squared radius for each location represents the proportion of variance explained (PVE) 
+# by the latent factors. With the exception of FL, the FA2 model appears to provide
+# a good representation of the covariance structure. The numeric PVE values can be 
+# obtained as follows:
+apply(ans2a$loadings,1,norm,type="f")^2 #StageWise
+apply(Gamma,1,norm,type="f")^2 #sommer
+#different PVE in sommer and StageWise
+
+
+# The cosine of the angle between locations in the uniplot equals the correlation 
+# due to the latent factors (recall cos(0) = 1). We can use this concept to construct the 
+# correlation matrix between environments in the sommer output.
+# Calculate correlations as the cosine of the angle between loadings:
+Locs_cor <- matrix(nrow = nrow(Gamma), ncol = nrow(Gamma))
+rownames(Locs_cor) <- rownames(summary(ans2a$vars)$cor)
+colnames(Locs_cor) <- rownames(summary(ans2a$vars)$cor)
+for (loc1 in rownames(Gamma)) {
+  for (loc2 in rownames(Gamma)) {
+    #find slopes of lines that go from (0,0) to each location in the uniplot
+    m1 <- (Gamma[loc1,2] - 0)/(Gamma[loc1,1] - 0)
+    m2 <- (Gamma[loc2,2] - 0)/(Gamma[loc2,1] - 0)
+    #angle from slopes
+    angle <- atan((m1-m2)/(1+m1*m2))
+    #correlation from angle
+    correlation <- cos(angle)
+    Locs_cor[loc1,loc2] <- correlation
+    Locs_cor[loc2,loc1] <- correlation
+  }
+  
+}
+
+# The correlation matrices between locations are different.
+# This difference arises because the correlation depends solely on the loadings of the factor
+# analytics. ASReml updates the loadings during the REML while estimating
+# the variances, whereas sommer doesn't (Sommer retains the initial loadings).
+summary(ans2a$vars)$cor #StageWise
+Locs_cor #Sommer
+
+
+
+# Using vcov between PCs, loadings, and the correlation between locations,
+# rebuild the vcov between locations and calculate the variance for the GxL term.
+# Variance of a weighted sum of two distributions:
+# (Link to explanation: 
+# https://stats.stackexchange.com/questions/5392/variance-of-two-weighted-random-variables)
+# Weights = loadings
+
+# In factor analytics, the original variable = latent variables (factors) + error (psi).
+# In sommer, we assume that psi = 0.
+# Therefore, for variance calculation, we can extract the variance of the locations
+# from the variance of the latent factors and the 
+# loadings that link the latent factors to the original variables (locations).
+
+# loc_{loc1} = loading_{loc1,pc1}*PC1 + loading_{loc1,pc2}*PC2
+# Var(loc_{loc1}) = Var(loading_{loc1,pc1}*PC1 + loading_{loc1,pc2}*PC2)
+# Var(loc_{loc1}) = loading_{loc1,pc1}^2*Var(PC1) + 
+#                   loading_{loc1,pc2}^2*Var(PC2) + 
+#                   loading_{loc1,pc1}*loading_{loc1,pc2}*cov(PC1,PC2)
+
+
+PC1var <- summary(ans2a_open)$varcomp["FA2Loc:id:PC1:PC1",1]
+PC2var <- summary(ans2a_open)$varcomp["FA2Loc:id:PC2:PC2",1]
+PCscov <- summary(ans2a_open)$varcomp["FA2Loc:id:PC1:PC2",1]
+Gamma
+
+locvars <- c(rep(NA, nrow(Gamma)))
+names(locvars) <- rownames(Gamma)
+for (loc in rownames(Gamma)) {
+  w1 <- Gamma[loc,"PC1"]
+  w2 <- Gamma[loc,"PC2"]
+  locvars[loc] <- w1^2*PC1var + w2^2*PC2var + 2*w1*w2*PCscov
+}
+
+Locs_vcov <- Locs_cor
+
+for (loc1 in rownames(Locs_vcov)) {
+  for (loc2 in colnames(Locs_vcov)) {
+    #diagonal
+    if (loc1 == loc2) {
+      Locs_vcov[loc1,loc2] <- locvars[loc1]
+    } else {
+      #cov(x,y) = cor(x,y)*sd(x)*sd(y)
+      Locs_vcov[loc1,loc2] <- Locs_vcov[loc1,loc2]*sqrt(locvars[loc1])*sqrt(locvars[loc2])
+    }
+    
+  }
+  
+}
+
+#weights = frequencies for each observed genotype-location combination
+gL <- paste0(sommerdf$id, ":", sommerdf$Loc)
+gL.weights <- table(gL)
+gL.weights <- gL.weights/sum(gL.weights)
+#vcov for all possible combinations of genotypes and locations
+Imat <- diag(length(unique(sommerdf$id)))
+rownames(Imat) <- unique(sommerdf$id)
+colnames(Imat) <- unique(sommerdf$id)
+gLvcov <- kronecker(Imat,Locs_vcov,make.dimnames = T)
+#leave only observed genotype-location combinations
+gLvcov <- gLvcov[names(gL.weights),names(gL.weights)]
+
+GxLvar <- as.numeric(sum(diag(gLvcov)*gL.weights) - 
+  matrix(gL.weights,nrow=1)%*%gLvcov%*%matrix(gL.weights,ncol=1))
+
+
+
+#residual variance per location
+res_vars <- summary(ans2a_open)$varcomp[(nrow(summary(ans2a_open)$varcomp)-
+                                            length(unique(sommerdf$Loc))+1):
+                                            nrow(summary(ans2a_open)$varcomp)
+                                           ,1]
+#Weighted average
+Loc_weights <- c(table(sommerdf$Loc))
+Loc_weights <- Loc_weights/sum(Loc_weights)
+Residual_var <- sum(res_vars*Loc_weights)
+
+
+#extract stage1error variance component from EEV
+Stage1Errorvar <- mean(diag(EEV_full)) - mean(EEV_full)
+
+#Put Everything together in a dataframe
+SommerVars <- c(#Env_variance, #environmental variance
+  ans2a_open$sigma[names(ans2a_open$sigma) == "id:isc:isc"], #genetic
+  GxLvar, #genotype by location interaction
+  Residual_var, #residual
+  Stage1Errorvar) #stage1 estimation error
+ASRemlVars <- summary(ans2a$vars)$var
+variances_ans2a <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2a) <- rownames(summary(ans2a$vars)$var)
+                                      
+# Very different variance components for genotype, genotype by location, and residual 
+# (genotype by environment) The difference is mostly due to the fact that ASReml updates 
+# FA loadings while estimating variances, while sommer doesn't.
+variances_ans2a
+
+
+
+
+#BLUPs
+Gamma=RotatedLoadings$loadings #loadings after rotation
+score.mat<-ans2a_open$uList[[2]];#extractfactorscores 
+BLUPs_GxE<-score.mat%*%t(Gamma)#BLUPsforallenvironments
+head(BLUPs_GxE)
+BLUPs_G <- ans2a_open$uList[[1]]
+
+#Weights for each location:
+Locs.index <- c(WI=1, NC=1, OR=1, NY=1, MO=1, MI=1, CA = 1, FL = 1)  
+#scale the weights to unit variance:
+index.scaled <- Locs.index/sqrt(diag(Locs_vcov))[match(names(Locs.index),
+                                                       rownames(Locs_vcov))]
+index.scaled <- index.scaled/sqrt(sum(index.scaled^2))
+
+weighted_BLUPs_GxE <- c(rep(0,nrow(BLUPs_GxE)))
+for (loc in names(index.scaled)) {
+  weighted_BLUPs_GxE <- weighted_BLUPs_GxE + index.scaled[loc]*BLUPs_GxE[,loc]
+}
+weighted_BLUPs_GxE <- weighted_BLUPs_GxE/sum(index.scaled)
+
+SommerBLUPs <- BLUPs_G + weighted_BLUPs_GxE + mean(ans2a_open$b)
+#StageWise
+
+prep0 <- blup_prep(data=ans1$blues,
+              vcov=ans1$vcov,
+              vars=ans2a$vars)
+ASRemlBLUPs <- blup(prep0, what="GV", index.coeff = Locs.index)
+
+# Mostly similar BLUPs
+# The main difference is due to the fact that ASReml updates FA loadings while
+# estimating variances, while sommer doesn't.
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+```
+
+Focusing on the 6 highly correlated locations in StageWise results—WI, MI, NC, OR, NY, MO—we now add the marker data to `Stage2` to estimate the additive correlation and predict breeding values.
+
+```{r}
+locs <- c("WI","MI","OR","NY","NC","MO")
+blues <- ans1$blues[ans1$blues$loc %in% locs,]
+tmp <- sapply(strsplit(names(ans1$vcov),split="_"),"[[",1)
+EEV <- ans1$vcov[tmp %in% locs]
+
+
+#open source
+locs_index <- which(sommerdf$Loc %in% locs)
+sommerdf_smaller <- sommerdf[locs_index,]
+EEV_smaller <- EEV_full[locs_index,locs_index]
+
+#StageWise
+ans2b <- Stage2(data=blues,vcov=EEV,geno=geno,non.add="g.resid")
+ans2c <- Stage2(data=blues,vcov=EEV,geno=geno,non.add="dom")
+```
+
+```{r,fig.width=3,fig.height=3}
+data.frame(non.add=c("g.resid","dom"), AIC=c(ans2b$aic,ans2c$aic))
+```
+
+The dominance model is selected over the genetic residual model because of its lower AIC.
+
+```{r,fig.width=3,fig.height=3}
+#Open source dominance model:
+Fg <- geno@Fg
+
+#include Fg into sommerdf:
+#1) reorder
+Fg <- Fg[match(sommerdf_smaller$id, names(Fg))]
+identical(sommerdf_smaller$id, names(Fg))
+sommerdf_smaller <- cbind(sommerdf_smaller, Fg)
+
+
+# When you want to use a known variance-covariance matrix in Sommer's `mmec()` function,
+# what you actually have to provide is the inverse of the matrix, and it must be of the
+# "dgCMatrix" class (sparse matrix).
+
+EEVInv <- as(solve(EEV_smaller),Class="dgCMatrix")
+Ginv <- as(solve(as.matrix(geno@G)),Class="dgCMatrix")
+Dinv <- as(solve(as.matrix(geno@D)),Class="dgCMatrix")
+
+#needed later to scale variances
+meanG <- mean(diag(geno@G))-mean(geno@G)
+meanD <- mean(diag(geno@D))-mean(geno@D)
+
+# Fix the variance for stage1Error to be 1. We have to scale it by dividing it
+# by the variance of the response variable because Sommer works that way.
+# We fix the variance to be 1 because we don't want the model to scale EEV in 
+# any way. However, 1 is not the true stage1Error variance component. More on that later.
+
+Variance_scaled <- as.matrix(1/var(sommerdf_smaller$BLUEs))
+
+
+#Factor analytics
+#1) Extract loadings using sommer functions
+FA2LocLoadings <- with(sommerdf_smaller, rrc(Loc, #Factor analytics for location
+                                   id, #Variables characterizing each location
+                                   #are the genotypes
+                                   BLUEs, #response variable
+                                   nPC=2, #FA2 --> 2PCs
+                                   returnGamma = TRUE
+                  )) 
+
+# 2) Rotate loadings (optional)
+# You can directly use the FA2LocLoadings, but with this dataset, there were
+# matrix inversion issues. To solve them, we can perform a varimax rotation to obtain
+# alternative but equivalent loadings that don't cause inversion issues in the model.
+RotatedLoadings <- varimax(FA2LocLoadings$Gamma)
+# I recommend using the original FA2LocLoadings by default and only using the varimax 
+# rotation if you encounter inversion issues.
+
+
+# 3) Expand loadings
+# Expand the loadings matrix using the locations design matrix.
+# The expanded loadings matrix will be the input to the factor analytics term
+# in the model.
+Zl <- model.matrix(BLUEs~Loc-1, data=sommerdf_smaller)
+#FA2Loc <- Zl%*%FA2LocLoadings$Gamma #without rotation
+FA2Loc <- Zl%*%RotatedLoadings$loadings #with rotation
+```
+
+
+```{r, eval=FALSE}
+
+#with dominance
+ans2c_open <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id), Gu = Ginv) + #addtitive genotypic effects
+                               vsc(isc(id), Gu = Dinv) + #dominance genotypic effects
+                       vsc(usc(FA2Loc),isc(id), Gu = Ginv) + #kronecker unstructured
+                     #factor analytics for location with additive effects
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                      rcov=~vsc(dsc(Loc),isc(units)), #diagonal loc by i.i.d. residuals
+                     nIters=50, #increased number or iterations
+                     #more EM iterations at the beggining for usc models 
+                     emWeight=c(rep(1,10),sommer::logspace(10,1,.05),rep(.05,80)), 
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+```
+
+
+```{r}
+summary(ans2c$vars)
+uniplot(ans2c$loadings)
+
+
+# The squared radius for each location represents the proportion of variance explained (PVE)
+# by the latent factors. With the exception of FL, the FA2 model appears to provide
+# a good representation of the covariance structure. The numeric PVE values can be 
+# obtained as follows:
+apply(ans2c$loadings,1,norm,type="f")^2 #StageWise
+Gamma <- RotatedLoadings$loadings
+apply(Gamma,1,norm,type="f")^2 #sommer
+#different PVE in sommer and StageWise
+
+
+# The cosine of the angle between locations equals the correlation due to the latent
+# factors (recall cos(0) = 1). We can use this concept to construct the correlation matrix
+# between environments in the sommer output.
+# Calculate correlations as the cosine of the angle between loadings:
+Locs_cor <- matrix(nrow = nrow(Gamma), ncol = nrow(Gamma))
+rownames(Locs_cor) <- rownames(summary(ans2c$vars)$cor)
+colnames(Locs_cor) <- rownames(summary(ans2c$vars)$cor)
+for (loc1 in rownames(Gamma)) {
+  for (loc2 in rownames(Gamma)) {
+    #find slopes of lines that go from (0,0) to each location in the uniplot
+    m1 <- (Gamma[loc1,2] - 0)/(Gamma[loc1,1] - 0)
+    m2 <- (Gamma[loc2,2] - 0)/(Gamma[loc2,1] - 0)
+    #angle from slopes
+    angle <- atan((m1-m2)/(1+m1*m2))
+    #correlation from angle
+    correlation <- cos(angle)
+    Locs_cor[loc1,loc2] <- correlation
+    Locs_cor[loc2,loc1] <- correlation
+  }
+  
+}
+
+# The correlation matrices between locations are different.
+# This difference arises because the correlation depends solely on the loadings of the factor
+# analytics. ASReml updates the loadings during the REML while estimating
+# the variances, whereas sommer doesn't (Sommer retains the initial loadings).
+
+summary(ans2c$vars)$cor #StageWise
+Locs_cor #Sommer
+
+
+
+# Using vcov between PCs, loadings, and correlation between locations, 
+# rebuild the vcov between locations and calculate the variance for the GxL term.
+# Variance of the weighted sum of two distributions:
+# (Link to explanation: 
+# https://stats.stackexchange.com/questions/5392/variance-of-two-weighted-random-variables)
+# Weights = loadings
+
+PC1var <- summary(ans2c_open)$varcomp["FA2Loc:id:Ginv:PC1:PC1",1]
+PC2var <- summary(ans2c_open)$varcomp["FA2Loc:id:Ginv:PC2:PC2",1]
+PCscov <- summary(ans2c_open)$varcomp["FA2Loc:id:Ginv:PC1:PC2",1]
+Gamma
+
+locvars <- c(rep(NA, nrow(Gamma)))
+names(locvars) <- rownames(Gamma)
+for (loc in rownames(Gamma)) {
+  w1 <- Gamma[loc,"PC1"]
+  w2 <- Gamma[loc,"PC2"]
+  locvars[loc] <- w1^2*PC1var + w2^2*PC2var + 2*w1*w2*PCscov
+}
+
+Locs_vcov <- Locs_cor
+
+for (loc1 in rownames(Locs_vcov)) {
+  for (loc2 in colnames(Locs_vcov)) {
+    #diagonal
+    if (loc1 == loc2) {
+      Locs_vcov[loc1,loc2] <- locvars[loc1]
+    } else {
+      #cov(x,y) = cor(x,y)*sd(x)*sd(y)
+      Locs_vcov[loc1,loc2] <- Locs_vcov[loc1,loc2]*sqrt(locvars[loc1])*sqrt(locvars[loc2])
+    }
+    
+  }
+  
+}
+
+#weights = frequencies for each observed genotype-location combination
+gL <- paste0(sommerdf_smaller$id, ":", sommerdf_smaller$Loc)
+gL.weights <- table(gL)
+gL.weights <- gL.weights/sum(gL.weights)
+#vcov for all possible combinations of genotypes and locations
+gLvcov <- kronecker(geno@G,Locs_vcov,make.dimnames = T)
+#leave only observed genotype-location combinations
+gLvcov <- gLvcov[names(gL.weights),names(gL.weights)]
+
+GxLvar <- as.numeric(sum(diag(gLvcov)*gL.weights) - 
+  matrix(gL.weights,nrow=1)%*%gLvcov%*%matrix(gL.weights,ncol=1))
+
+
+res_vars <- summary(ans2c_open)$varcomp[(nrow(summary(ans2c_open)$varcomp)-
+                                            length(unique(sommerdf_smaller$Loc))+1):
+                                            nrow(summary(ans2c_open)$varcomp)
+                                           ,1]
+Loc_weights <- c(table(sommerdf_smaller$Loc))
+Loc_weights <- Loc_weights/sum(Loc_weights)
+Residual_var <- sum(res_vars*Loc_weights)
+
+
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_smaller)
+Env_effects <- ans2c_open$b[which(rownames(ans2c_open$b) != "Fg")]
+Env_variance <- var(Xenv%*%Env_effects)
+
+#extract stage1error variance component from vcov
+Stage1Errorvar <- mean(diag(EEV_smaller)) - mean(EEV_smaller)
+
+
+
+
+# #heterosis effects for all observations 
+# XFg <- sommerdf_smaller$Fg
+FgEffects <- ans2c_open$b["Fg",]
+# Fg_variance <- var(XFg*FgEffects)
+
+# Heterosis effects for each genotype
+# Extract XFg from geno, not from the model
+# In the model, there are repeated Fg coefficients for genotypes that had more
+# than one BLUE (genotypes present in more than one environment), and there are 
+# no Fg coefficients for genotypes that were not phenotyped and had no BLUEs.
+# If we take Fg from geno, there are no such problems.
+
+XFg <- geno@Fg
+heterosis_effects <- XFg*FgEffects
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis_effects <- heterosis_effects[match(rownames(ans2c_open$uList$`vsc(isc(id), Gu = Ginv)`),
+                        names(heterosis_effects))]
+Fg_variance <- var(heterosis_effects)
+
+
+
+
+
+
+#Put Everything together in a dataframe
+SommerVars <- c(#Env_variance, #environmental variance
+  ans2c_open$sigma[names(ans2c_open$sigma) == "id:Ginv:isc:isc"]*meanG, #additive
+  GxLvar, #additive by location interaction
+  ans2c_open$sigma[names(ans2c_open$sigma) == "id:Dinv:isc:isc"]*meanD, #dominance
+  Fg_variance, #heterosis
+  Residual_var, #residual
+  Stage1Errorvar) #stage1 estimation error
+ASRemlVars <- summary(ans2c$vars)$var
+variances_ans2c <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2c) <- rownames(summary(ans2c$vars)$var)
+                                      
+#Very different variance components 
+#The difference is due to ASReml updating the FA loadings while estimating 
+#variances, which sommer doesn't do
+variances_ans2c
+
+
+
+
+
+
+
+
+#BLUPs
+Gamma=RotatedLoadings$loadings #loadings after rotation
+score.mat<-ans2a_open$uList[[2]];#extractfactorscores 
+BLUPs_GxE<-score.mat%*%t(Gamma)#BLUPsforallenvironments
+head(BLUPs_GxE)
+
+#Weights for each location:
+Locs.index <- c(WI=1, NC=1, OR=1, NY=1, MO=1, MI=1)  
+#scale the weights to unit variance:
+index.scaled <- Locs.index/sqrt(diag(Locs_vcov))[match(names(Locs.index),
+                                                       rownames(Locs_vcov))]
+index.scaled <- index.scaled/sqrt(sum(index.scaled^2))
+
+weighted_BLUPs_GxE <- c(rep(0,nrow(BLUPs_GxE)))
+for (loc in names(index.scaled)) {
+  weighted_BLUPs_GxE <- weighted_BLUPs_GxE + index.scaled[loc]*BLUPs_GxE[,loc]
+}
+weighted_BLUPs_GxE <- weighted_BLUPs_GxE/sum(index.scaled)
+
+SommerBLUPs <- ans2c_open$uList$`vsc(isc(id), Gu = Ginv)` +
+              ans2c_open$uList$`vsc(isc(id), Gu = Dinv)` + 
+              weighted_BLUPs_GxE+
+              heterosis_effects +
+              mean(Env_effects)
+
+
+#SommerBLUPs
+
+prep1 <- blup_prep(data=blues,vcov=EEV,geno=geno,vars=ans2c$vars)
+ 
+
+ASRemlBLUPs <- blup(data=prep1,geno=geno,index.coeff=index.scaled,what="GV")
+#Mostly similar correlation
+#The difference is due to ASReml updating the FA loadings while estimating 
+#variances, which sommer doesn't do
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+```
+
+The correlation matrix and `uniplot`, which are based on the additive values, indicate that the yield in NC differs somewhat from the other five sites.
+
+In comparison to the single-location analysis in Vignette 1, an additional argument is required for the `blup` function to specify the index coefficients. These coefficients are interpreted as the relative weights for each location after standardization to unit variance. The following code compares the reliability of breeding value (BV) predictions between WI and NC.
+
+```{r,fig.width=3,fig.height=3}
+#prep1 <- blup_prep(data=blues,vcov=vcov,geno=geno,vars=ans2c$vars)
+
+WI.index <- c(WI=1, NC=0, OR=0, NY=0, MO=0, MI=0)  
+NC.index <- c(WI=0, NC=1, OR=0, NY=0, MO=0, MI=0)  
+
+WI.pred <- blup(data=prep1,geno=geno,index.coeff=WI.index,what="BV")
+NC.pred <- blup(data=prep1,geno=geno,index.coeff=NC.index,what="BV")
+
+pred <- merge(NC.pred,WI.pred,by="id")
+colnames(pred) <- c("id","BV.NC","r2.NC","BV.WI","r2.WI")
+
+ggplot(pred,aes(x=r2.NC,y=r2.WI)) +
+  geom_point() +
+  coord_fixed(ratio=1) +
+  xlim(0.3,0.8) + 
+  ylim(0.3,0.8) + 
+  geom_line(data=data.frame(x=c(0.3,0.8),y=c(0.3,0.8)),
+            mapping=aes(x=x,y=y),linetype=2) +
+  theme_bw() + 
+  xlab("NC") +
+  ylab("WI") +
+  ggtitle("BV Reliability")
+```
+
+The figure above illustrates that breeding values were predicted with higher reliability in WI compared to NC. This outcome aligns with the high correlation between WI and the other four sites (OR, MO, MI, NY) when contrasted with NC.
+
+You can use the `mask` argument for `blup_prep` to selectively exclude individuals at one or more locations. This allows you to assess the accuracy of predictions in new environments. While the previous analysis assessed the reliability of GEBVs in WI when WI phenotypes were available, the next analysis excludes WI phenotypes:
+
+```{r, fig.width=3,fig.height=3}
+#StageWise
+WI.env <- unique(blues$env[blues$loc=="WI"])
+
+prep2 <- blup_prep(data=blues,vcov=EEV,geno=geno,vars=ans2c$vars,
+                   mask=data.frame(env=WI.env))
+
+pred2 <- blup(data=prep2,geno=geno,index.coeff=WI.index,what="BV")
+
+plot.data <- merge(pred2[,c("id","r2")],WI.pred[,c("id","r2")],by="id")
+colnames(plot.data) <- c("id","without.WI.pheno","with.WI.pheno")
+
+ggplot(plot.data,aes(x=without.WI.pheno,y=with.WI.pheno)) +
+  geom_point() + coord_fixed(ratio=1) +
+  xlim(0.3,0.8) + 
+  ylim(0.3,0.8) + 
+  geom_line(data=data.frame(x=c(0.3,0.8),y=c(0.3,0.8)),
+            mapping=aes(x=x,y=y),
+            linetype=2) + 
+  theme_bw() + 
+  xlab("Without WI phenotypes") + 
+  ylab("With WI phenotypes") + 
+  ggtitle("WI BV Reliability")
+
+
+
+#Sommer
+#Mask the data (replace BLUEs with NAs)
+sommerdf_mask <- sommerdf_smaller
+sommerdf_mask$BLUEs[which(sommerdf_mask$Env %in% WI.env)] <- NA
+#sommerdf_mask$BLUEs[sample(1:nrow(sommerdf_mask),30)] <- NA
+
+#diagonal variance matrix for locations in residuals:
+Locdiag <- c()
+for (enviro in unique(sommerdf_mask$Loc)) {
+  Locdiag <- c(Locdiag, ans2c_open$sigma[[paste0("Loc:units:", enviro, ":", enviro)]])
+}
+Locdiag <- diag(Locdiag)
+rownames(Locdiag) <- unique(sommerdf_mask$Loc)
+colnames(Locdiag) <- unique(sommerdf_mask$Loc)
+#LocdiagInv <-as(solve(Locdiag),Class="dgCMatrix")
+
+#Residual vcov
+Rmat <- diag(diag(Locdiag[sommerdf_mask$Loc,sommerdf_mask$Loc]))
+Rinv <- as(solve(Rmat),Class="dgCMatrix")
+rownames(Rinv) <- paste0("u",1:nrow(Rinv)) #sommer naming convention for residuals
+colnames(Rinv) <- paste0("u",1:ncol(Rinv)) #sommer naming convention for residuals
+
+#We already know the estimated vcov between locs from previous models
+Locs_vcov
+LxG <- kronecker(Locs_vcov,geno@G, make.dimnames = T)
+LxGinv <- as(solve(as.matrix(LxG)+1e-6*diag(nrow(LxG))),Class="dgCMatrix")
+
+LxGcol <- paste0(sommerdf_mask$Loc, ":", sommerdf_mask$id)
+sommerdf_mask <- cbind(sommerdf_mask, LxGcol)
+```
+
+
+
+```{r, eval=FALSE}
+# To calculate BLUPs with known variances, simply fix all variance terms 
+# and perform a single REML iteration:
+ans2mask <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id,
+                                   theta = matrix(ans2c_open$sigma[["id:Ginv:isc:isc"]]/
+                                         var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)), 
+                                  Gu = Ginv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(id,
+                                   theta = matrix(ans2c_open$sigma[["id:Dinv:isc:isc"]]/
+                                         var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)),
+                                  Gu = Dinv) + #dominance genotypic
+                   
+                       vsc(isc(LxGcol,
+                                   theta = matrix(1/var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)
+                               ), Gu = LxGinv) + #kronecker unstructured
+                                #effects
+                       vsc(isc(Stage1Error, # Stage 1 estimation error effect.
+                      # Since it's inside the `isc()` function, we are assuming an identity 
+                      # variance-covariance structure.This is undesired and will be overridden later.
+                      # Ideally, we would skip the `isc()` function altogether, but Sommer syntax 
+                      #requires it, even if we will overwrite it later.
+                               theta = matrix(1/var(sommerdf_smaller$BLUEs)), #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                # As we are using constraint 3, we disable 
+                                #variance estimation.
+                                # The model will use the value we provided 
+                                #in the "theta" argument.
+
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units,
+                                   theta = matrix(1/var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)), 
+                               Gu = Rinv), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_mask,
+                     verbose = TRUE,
+                     nIters=1 #as we already know the variances, a single 
+                    #REML iteration is enough
+)
+```
+
+```{r}
+
+#rename BLUP names to be shorter
+names(ans2mask$uList) <- c("additive", "dominance", "GxL", "Stage1Error")
+
+
+
+WI.GxE.BLUPs <- c(ans2mask$uList$GxL[paste0("WI:",unique(sommerdf_mask$id)),])
+
+SommerBLUPs <- ans2mask$uList$additive+ WI.GxE.BLUPs
+   
+# Very poor correlation.
+# We don't recommend using sommer for this application.
+# The GxE BLUPs in sommer are not reliable for locations for which we don't have
+# any data.
+cor(pred2$value, #StageWise
+    SommerBLUPs[match(pred2$id,rownames(SommerBLUPs))]) #Sommer
+
+
+
+#save.image("workspace2.RData")
+#save(ans2a_open, ans2c_open, ans2mask,ans2a, file = "Vignette2Models.RData")
+```
+
+As expected, the reliability using StageWise was higher with WI phenotypes. In contrast, predictions with sommer have been extremely poor. The likely reason for this is that the WI GxL BLUPs rely heavily on the variance-covariance matrix between locations, which is estimated using the factor analytics loadings. ASReml (StageWise) updates these loadings as the variances are estimated in the model, while sommer retains the initial values for the loadings. As a result, the loadings and therefore the covariance between locations is better estimated by ASReml than by sommer.
+
+
+# Bibliography
+
+Damesa, T.M., Möhring, J., Worku, M. and Piepho, H.-P. (2017), One Step at a Time: Stage-Wise Analysis of a Series of Experiments. Agronomy Journal, 109: 845-857.
+
+Endelman, J. B. (2023). Fully efficient, two-stage analysis of multi-environment trials with directional dominance and multi-trait genomic selection. Theoretical and Applied Genetics, 136(4), 65.
+
+Giovanny C (2016). “Genome assisted prediction of quantitative traits using the R package sommer.” PLoS ONE, 11, 1-15.
