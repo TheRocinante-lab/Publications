@@ -1,0 +1,2343 @@
+---
+title: "Vignette 1: Single trait analysis with homogeneous GxE"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette 1: Single trait analysis with homogeneous GxE}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning = FALSE)
+```
+
+
+
+
+Libraries for open source:
+```{r}
+library(Matrix) #all StageWise models in the vignettes work for Matrix package 
+#version 1.5-1. Later versions may cause errors in some of the StageWise models
+library(lme4)
+library(StageWise)
+library(matrixcalc)
+library(sommer)
+library(pracma)
+#load("Vignette1Models.RData")
+```
+
+
+# Introduction
+
+
+StageWise package allows you to build fully-efficient two-stage models on the multi-trait, multi-environment data. A fully efficient two-stage model is equivalent to its corresponding single-stage model, but it is much faster to fit.
+
+The main advantages of StageWise include its ease of use and its ability to handle different degrees of ploidy. It also allows for modeling genotype-by-environment interactions in multi-location, multi-year trials and supports multi-trait analyses. However, **its primary disadvantage is its reliance on ASReml for variance estimations, which requires a license**. Furthermore, while StageWise is versatile and applicable in most situations, understanding how to perform all modeling steps manually opens up additional possibilities. As a result, the aim of this work is twofold:
+
+* Replicate StageWise results using open-source software, specifically the lme4 and Sommer R packages.
+
+* Provide ample theoretical background and comprehensive, step-by-step explanations to enable readers to gain a deep understanding of the process, empowering them to employ modeling strategies beyond those included in the StageWise package, if the situation demand it.
+
+In this document, we will explain the bulk of the theoretical foundation and reproduce the results found in StageWise Vignette1. Subsequent documents will focus on genotype-by-location interactions and multitrait modeling.}
+
+If you choose to cite this work, **it is important to also include a citation for the StageWise package (Endelman, J. B., 2023)** since we expand upon the vignettes he's published, offering open-source alternatives. For a more in-depth exploration of the fully-efficient two-stage modeling strategy, we recommend referring to Damesa et al. (2017) and also Piepho et al (2012)} .
+
+# Theoretical background
+
+Here, we present the theory related to the scenario covered in StageWise vignette1: single location, single trait, several years. The modelling is divided in two stages:
+
+### Stage 1 model:
+
+$$
+\boldsymbol{y_j} = X_{g_j}\boldsymbol{g_j} + X_{Co_j}\boldsymbol{CoFix_j} + Z_{Co_j}\boldsymbol{CoRand_j} + \boldsymbol{\epsilon_j}
+$$
+
+Where $\boldsymbol{y_j}$ is a vector of the phenotypes in environment $j$, $\boldsymbol{g_j}$ is a vector of fixed genotypic effects, $\boldsymbol{CoFix_j}$ and $\boldsymbol{CoRand_j}$ refer to any additional fixed or random covarieties or cofactors that may be included in the model (e.g. block effect) and $\boldsymbol{\epsilon_j} \sim N(\boldsymbol{0}, I\sigma^2_{\epsilon_j})$ is a vector of residuals. $X_{g_j}$, $X_{Co_j}$ and $Z_{Co_j}$ are design matrices.
+
+**An independent stage 1 model is performed for each environment. The BLUEs from each environment (contained in $\boldsymbol{g_j}$) are concatenated into a single vector that will be used as input for the next step**. These BLUEs have a estimation error variance-covariance structure ($EEV_j$) associated with them (equivalent to the prediction error variance-covariance of random effects) that can be extracted and passed to the next stage, with large values of the error variance reflecting a low reliability of the estimations. The calculation of $EEV_j$ is usually done automatically by the modelling packages, but in a few situations, it may be necessary to calculate it manually. Furthermore, knowing how it is calculated is very helpful for understanding its meaning.
+
+From Robinson, et al., 1987, we have the formula for fixed and random effects estimation/prediction error variance in a mixed model following Henderson equations: 
+
+$$
+Var \left( \begin{matrix} \boldsymbol{\beta_j} - \boldsymbol{\hat{\beta_j}} \\ \boldsymbol{u_j} - \boldsymbol{\hat{u_j}} \end{matrix} \right) =   \left( \begin{matrix} X_j'R_j^{-1}X_j & X_j'R_j^{-1}Z_j \\ Z_j'R_j^{-1}X_j & Z_j'R_j^{-1}Z_j + \lambda_j K_j^{-1} \end{matrix} \right)^{-1}*\sigma^2_{\epsilon_j} = \left( \begin{matrix} C_{11} & C_{12} \\ C_{21} & C_{22} \end{matrix} \right)*\sigma^2_{\epsilon_j}
+$$
+$$
+EEV_j = C_{11}*\sigma^2_{\epsilon_j}
+$$
+Where $\boldsymbol{\beta_j}$ is a vector of fixed effects in environment $j$, $\boldsymbol{\epsilon_j} \sim N(\boldsymbol{0},\sigma^2_{\epsilon_j}*R_j)$ which follows a normal distribution with mean $\boldsymbol{0}$ and variance $\sigma^2_{\epsilon_j}*R_j$, represents the residuals, $\boldsymbol{u} \sim N(\boldsymbol{0},\sigma^2_{u_j}*K_j)$ are the random effects, $R_j$ and $K_j$ are the variance-covariance structures for residuals and random effects respectively, $\sigma^2_{\epsilon_j}$ and $\sigma^2_{u_j}$ are the variance components for residuals and random effects, $X_j$ and $Z_j$ are design matrices for fixed and random effects respectively,  $\lambda_j = \frac{\sigma^2_{\epsilon_j}}{\sigma^2_{u_j}}$ is the residual variance divided by the random effect variance. $EEV_j$ is the estimation error variance-covariance **(EEV)** matrix of the fixed effects in environment $j$. In most situations, $R_j$ is the identity matrix and it can therefore be ignored
+
+
+**In the first stage modelling, the effect that must always be present is the fixed genotypic effect**, but there may also be several fixed and random effects. 
+
+If several fixed or random effects are included, the equation above still holds. To accommodate multiple effects, we can concatenate the design matrices and calculate the direct sum of the variance-covariance matrices for the random effects. Imagine that there are two different fixed effects $\boldsymbol{\beta_{1_j}}$ and $\boldsymbol{\beta_{2_j}}$ with design matrices $X_{1_j}$ and $X_{2_j}$. There are also two different random effects $\boldsymbol{u_{1_j}} \sim N(\boldsymbol{0},\sigma^2_{1_j}*K_{1_j})$ and $\boldsymbol{u_{2_j}} \sim N(\boldsymbol{0},\sigma^2_{2_j}*K_{2_j})$ with design matrices $Z_{1_j}$ and $Z_{2_j}$. We can merge the fixed and random effects into a single one as follows: 
+
+- Vector Creation: 
+    **Create combined vectors for each set of effects:**
+    - $\beta_j= c(\beta_{1j},\beta_{2j})$ for beta coefficients.
+    - $u_j=c(u_{1j},u_{2j})$ for 'u' values.
+    
+
+- Matrix Binding
+    **Bind matrices for X and Z values**
+    - $Xj=cbind(X_{1j},X_{2j})$ for X matrices.
+    - $Zj=cbind(Z_{1j}, Z_{2j})$ for Z matrices.
+
+The merged random effects would have the following distribution, which means $\boldsymbol{u_j} \sim(0,\left( \begin{matrix} \sigma^2_{1_j}*K_{1_j} & 0 \\ 0 & \sigma^2_{2_j}*K_{2_j} \end{matrix} \right))$. That way, in the equation for the calculation of $EEV_j$, $\lambda_j K_j^{-1}$ can be replaced by $\left( \begin{matrix} \frac{\sigma^2_{\epsilon_j}}{\sigma^2_{1_j}}*K_{1_j}^{-1} & 0 \\ 0 & \frac{\sigma^2_{\epsilon_j}}{\sigma^2_{2_j}}*K_{2_j}^{-1} \end{matrix} \right)$
+
+
+In contrast, if only the fixed genotypic effects are included in the model, the equation becomes very simple:
+
+$$
+EEV_j = Var (\boldsymbol{\beta_j} - \boldsymbol{\hat{\beta_j}}) = (X_j'R_j^{-1}X_j)^{-1}\sigma^2_{\epsilon_j}
+$$
+If $R_j$ is assumed to be the identity, the equation above coincides with the variance for $\boldsymbol{\beta_j}$ when solved by ordinary least squares ($(X_j'X_j)^{-1}\sigma^2_{\epsilon_j}$). **Please note that $X'X$ is a diagonal matrix counting the number of times each genotype is observed in environment $j$**. Therefore, $(X_j'X_j)^{-1}$ is a diagonal matrix containing the inverse of the number of times each genotype is present. The reliability of the estimations is thus higher for genotypes frequently observed in our data.
+
+
+
+
+### Stage 2 model without marker data:
+
+$$
+BLUEs = \boldsymbol{y} = X\boldsymbol{E} + Z\boldsymbol{g} + \boldsymbol{s} + \boldsymbol{gE}
+$$
+Where $BLUEs = \boldsymbol{y}$ is a vector of stage 1 genotypic BLUEs (BLUEs of different environments are concatenated), $\boldsymbol{E}$ is a vector of fixed environmental effects, $\boldsymbol{g} \sim N(\boldsymbol{0},I\sigma^2_g)$ is a vector of random genotypic effects, $\boldsymbol{s} \sim N(\boldsymbol{0},EEV)$ is a vector of random Stage 1 estimation errors and $\boldsymbol{gE} \sim N(\boldsymbol{0},I\sigma^2_{ge})$ is a vector of residuals that correspond to genotype by environment interaction unexplained by the other terms. $X$ and $Z$ are design matrices for their corresponding effects. $\sigma^2_g$ and $\sigma^2_{ge}$ are the genotypic and residual variances respectively and $I$ is an identity matrix with the appropriate dimensions. 
+
+
+
+The $EEV$ matrix can be obtained as the *direct sum* of the $EEV_j$ matrices from each environment:
+
+$$
+EEV = \left( \begin{matrix} EEV_1 & 0 & \dots & 0 \\ 0 & EEV_2 & &  \\ \vdots &  & \ddots &  \\ 0 &  & & EEV_j \end{matrix} \right)
+$$
+
+Where $EEV_1$ to $EEV_j$ are the EEV matrices for the fixed genotypic effects in the environments 1 to $j$. The environments have to be in the same order during the concatenation of their BLUEs vectors and during the construction of $EEV$.
+
+
+
+
+**It is important to note that $s$ has no free variance parameters**. Until now, we have expressed the variance-covariance of all random effects as the product of its variance component and its variance-covariance structure. For example, in $\boldsymbol{g} \sim N(\boldsymbol{0},I\sigma^2_g),$ $I$ is the variance-covariance structure, and $\sigma^2_g$ is the variance component. However, the $EEV$ matrix we have obtained from the Stage1Errors is the result of the product between its variance-covariance structure and its variance component. If we want to know the variance component associated with the effect $s$, we need a way to undo this product. To that end, we need a way to summarize, in a scalar number (the variance component), the overall amount of variation present in a variance-covariance matrix. A common way to do this is by using the determinant of the matrix, which returns a large scalar for high values on the diagonal (variances) and low values in the off-diagonals (covariances). In other words, high overall variance is reached when the Stage1Errors have a high variance and are uncorrelated with each other. Instead of using the determinant, StageWise calculates the overall variance as the mean of the diagonal elements of the matrix minus the mean of the entire matrix. This is an easier-to-compute approach to the determinant while being conceptually similar. Therefore, we can easily split $EEV$ into its variance component $\sigma^2_s$ and its variance-covariance structure $EEV_{str},$ where the variance-covariance structure is the full variance-covariance matrix scaled to have a total amount of variation equal to one, and the variance component is the scaling factor
+
+$$
+\sigma^2_s = mean(diag(EEV)) - mean(EEV)
+$$
+
+$$
+EEV_{str} = EEV/\sigma^2_s
+$$
+
+$$
+s \sim N(\boldsymbol{0},EEV) = N(\boldsymbol{0},\sigma^2_s*EEV_{str})
+$$
+
+When we say that $\boldsymbol{s}$ has no free variance parameters, we mean that $\sigma^2_s$ is known and provided as an input to the model, it is not estimated.
+
+
+### Stage 2 model with marker data:
+
+It is similar to the previous model but the genotypic effects are split into additive and dominance effects, with variance-covariance matrices calculated from marker data: 
+
+$$
+BLUEs = \boldsymbol{y} = X\boldsymbol{E} + Z\boldsymbol{a} + Z\boldsymbol{d} -b\boldsymbol{F} + \boldsymbol{s} + \boldsymbol{gE}
+$$
+Where $\boldsymbol{a} \sim N(\boldsymbol{0},G\sigma^2_a)$ is a vector of random additive effects, $\boldsymbol{d} \sim N(\boldsymbol{0},D\sigma^2_d)$ is a vector of random dominance effects in the absence of heterosis, and $b\boldsymbol{F}$ is a vector of fixed heterosis effects. $G$ is the additive relationship matrix corrected for ploidy (the classical VanRaden, 2008 relationship matrix multiplied by $2$ and divided by the degree of ploidy $\phi$). $D$ is the dominance relationship matrix corrected for ploidy. To compute it, a $Q$ matrix of dominance coefficients is calculated by substituting each element in the marker matrix $M$ as follows:
+
+
+$$
+Q[i,j]=−2(\binom{\phi}{2})𝑝^2+2𝑝(𝜙−1)M[i,j]−M[i,j](M[i,j]−1)
+$$
+$$
+D= \frac{QQ^T}{ \binom{\phi}{2} \sum_k 4 p^2_k q^2_k}
+$$
+
+Where $D$ is the dominance relationship matrix, $\phi$ is the ploidy number, $p$ is the minor allele frequency, $q = 1-p$ is the major allele frequency, and $i$ and $j$ indicate the positions in the $Q$ and $M$ matrices. $M$ is a numeric marker matrix containing the number of copies of the minor allele at each locus for each genotype. This is a generalized equation for any ploidy number, but if we assume a diploid genotype ($\phi = 2$, with $M$ coded as 0, 1, 2; with 2 indicating homozygosity for the minor allele), and we elaborate from the $Q[i,j]$ equation, we arrive at the following substitutions:
+
+$$
+M[i,j] = 0 \rightarrow Q[i,j] = -2p^2
+$$
+$$
+M[i,j] = 1 \rightarrow Q[i,j] = 2pq
+$$
+$$
+M[i,j] = 2 \rightarrow Q[i,j] = -2q^2
+$$
+Which is equivalent to the classical Vitezica et al., 2013 calculation of the dominance relationship matrix.
+
+
+The heterosis effects $-b\boldsymbol{F}$ can be calculated in several ways, although here we will just focus on one. $\boldsymbol{F}$ is a vector of inbreeding coefficients that can be extracted from the main diagonal of $G$ as:
+
+$$
+\boldsymbol{F} = \frac{diag(G)-1}{\phi - 1}
+$$
+$b$ is a regression coefficient that is estimated by the model. if $b > 0$, there is heterosis.
+
+
+
+# Replicate StageWise Vignette1:
+
+Here, we include StageWise Vignette1 and we will explain how to replicate it with open-source software as we go through it.
+
+
+### Preface
+
+This vignette illustrates basic features of the package using a potato breeding dataset of 943 genotypes (i.e., clones), with phenotype data from six years at one location. It is an updated version of the dataset published by [Endelman et al. (2018)](https://doi.org/10.1534/genetics.118.300685). This vignette covers single trait analysis, under the assumption that all environments have the same genetic correlation (i.e., compound symmetry). The analysis of multiple locations with different correlations are covered in [Vignette 2](https://jendelman.github.io/StageWise/Vignette2.html), and the analysis of correlated traits is covered in [Vignette 3](https://jendelman.github.io/StageWise/Vignette3.html).
+
+There are five main functions in the package:
+
+* `read_geno`
+
+* `Stage1`
+
+* `Stage2`
+
+* `blup_prep`
+
+* `blup`
+
+The package depends on ASReml-R (version 4.1.0.148 or later), which requires a license from [VSN International](https://www.vsni.co.uk/software/asreml-r). 
+
+### Stage 1
+
+In Stage 1, the data for each environment are analyzed independently, which allows for the selection of different models tailored to different experimental designs and patterns of spatial variation. The `Stage1` function in the package offers a variety of commonly used analysis methods. However, it is also possible to use other software for Stage 1. For a linear model with only fixed and i.i.d. random effects, for example, the argument `solver="asreml"` triggers the use of ASReml-R for variance component estimation. Another option is `solver="spats"`, which triggers the use of R package [SpATS](https://cran.r-project.org/web/packages/SpATS/index.html) to fit a 2D spline (in addition to fixed or i.i.d. effects). Regardless of which solver is used, at least some of the individuals should be replicated (which includes augmented designs with repeated checks). If you have no replication within environment, skip Stage 1 and go to Stage 2.
+
+The CSV file of phenotype data used in `Stage1` should have two required columns: 'id,' which contains the individual identifier and is matched against the information from the genotype input file; and 'env,' which represents the name of the environment, typically in the format of a location x year combination (This vignette illustrates the analysis of multiple years from one location, or when multiple locations are similar enough that the genotype x location effect can be neglected. For the analysis of correlated locations, consult [Vignette 2](https://jendelman.github.io/StageWise/Vignette2.html) after you complete this vignette.) The other columns in the input file contain traits, cofactors, or covariates.
+
+The phenotypes for this tutorial are based on six years (2015-2020) of variety trials at the Hancock Research Station of the University of Wisconsin. Data for the first five years are in the file "pheno1a", which includes a column with an incomplete blocking factor. The 2020 data are provided in the file "pheno1b" and consists of two partially replicated trials (preliminary and advanced), with row and range information to illustrate spatial analysis. 
+
+* total yield (Mg per ha) 
+
+* vine maturity (1=early to 9=late)
+
+* fry color, measured in units of Hunter Lightness (L) after 6 months of storage
+
+The data files also contain the stand count for each plot (out of 15 total plants), which is included as a covariate in the Stage 1 model. 
+
+```{r, fig.width=4,fig.height=4}
+pheno1a.file <- system.file("vignette_data", "pheno1a.csv", package = "StageWise")
+pheno1a <- read.csv(pheno1a.file)
+head(pheno1a)
+
+pheno1b.file <- system.file("vignette_data", "pheno1b.csv", package = "StageWise")
+pheno1b <- read.csv(pheno1b.file)
+head(pheno1b)
+
+tmp <- merge(pheno1a[,c("env","id")],pheno1b[,c("env","id")],all=T)
+library(ggplot2)
+ggplot(data=tmp,aes(x=env)) + geom_bar() + 
+  ylab("Number of plots") + xlab("Environment") + theme_bw() + 
+  theme(axis.text.x=element_text(angle=90,vjust=0.5,size=10)) 
+```
+
+As is typical of breeding trials, the majority of clones were tested in one year and then dropped, but there is sufficient replication across years to estimate genotype x env interactions.
+
+A data frame with variables "name", "fixed", and "factor" is used to specify which columns of the input file should be included as covariates or cofactors, and whether the effects are fixed or random. We begin with analysis of the 2015-2019 data, using "block" and "stand.count" as cofactor and covariate, respectively:
+```{r}
+#StageWise
+effects <- data.frame(name=c("block","stand.count"),
+                      fixed=c(FALSE,TRUE),
+                      factor=c(TRUE,FALSE))
+effects
+
+ans1a <- Stage1(filename=pheno1a.file,traits="total.yield",
+                effects=effects,solver="asreml")
+```
+
+
+
+
+```{r}
+#Open source
+#one model per environment
+models <- list()
+BLUEs <- c()
+EEVs <- list()
+Envs <- c()
+H2 <- c()
+residuals <- data.frame()
+for (enviro in unique(pheno1a$env)) {
+  phenoenv <- pheno1a[pheno1a$env == enviro,]
+  #1) remove entries with missing values for yield
+  phenoenv <- phenoenv[!is.na(phenoenv$total.yield),]
+  
+  Envs <- c(Envs, rep(enviro, length(unique(phenoenv$id))))
+  
+  phenoenv$id <- factor(phenoenv$id)
+  phenoenv$block <- factor(phenoenv$block) #cofactor
+  phenoenv$stand.count <- as.numeric(phenoenv$stand.count) #covariate
+  phenoenv$stand.count <- scale(phenoenv$stand.count, scale = FALSE, center = TRUE) 
+  #Important to center covaraites!
+  #If you don't center the data, EEV calculation will be massively off!!!
+  
+  #remove the intercept in the model!
+  #It's important for correct EEV calculation
+  
+  #Make sure the first fixed effect in the formula is id!
+  models[[enviro]] <- lmer(total.yield ~ -1 + id + stand.count + (1|block) ,
+                        data=phenoenv)
+  #If you get this message:
+  #boundary (singular) fit: see help('isSingular')
+  #It means that the estimated variance for the random effect was 0. It's fine
+  #because we are interested in the fixed effects of id.
+  
+
+  #extract H2
+  #random effect variances
+  variance_block <- as.numeric(summary(models[[enviro]])$varcor$block)
+  variance_residual <- sigma(models[[enviro]])^2
+  
+  #fixed effect variances
+  #1) calculate design matrix
+  X.id <- model.matrix(total.yield~id-1, data=phenoenv) #remove intercept.
+  X.stand.count <- phenoenv$stand.count #fixed effect for a covariate is a
+  #regression. design matrix of a regression contains the values for the variable
+  colnames(X.stand.count) <- "stand.count"
+  
+  #calculate fixed effects for each plot
+  #id effects:
+  # y = Xb + ... + epsilon
+  # b (vector of the genotypic fixed effects) can be retrieved from:
+  #"models[[enviro]]@beta[1:length(unique(phenoenv$id))]"
+  # X is the design matrix linking each obervation (each plot in the field) with
+  # its corresponding genotypic effect.
+  id_effects <- X.id%*%models[[enviro]]@beta[1:length(unique(phenoenv$id))]
+  #stand.count value times its regression slope
+  #the slope is the fixed effect found after the id effects
+  #it's after the id effects because that's the order in which we wrote it in 
+  #the lmer formula
+  stand.count_effects <- X.stand.count%*%models[[enviro]]@beta[length(unique(phenoenv$id))+1]
+  
+  #calculate variance for the fixed effects
+  id_variance <- var(id_effects)
+  stand.count_variance <- var(stand.count_effects)
+  
+  #Plot level heritability
+  H2 <- c(H2, id_variance/(id_variance +
+                       variance_block + 
+                       variance_residual + 
+                       stand.count_variance) )
+  
+  
+  #extract residuals
+  resid <- unlist(summary(models[[enviro]])$residuals)
+  expt <- rep(enviro, length(resid))
+  tmp <- data.frame(cbind(expt, resid))
+  residuals <- rbind(residuals, tmp)
+  
+  
+  #calculate EEV (estimation error variance-covariance matrix for id effects)
+  EEV_lmer <- matrix(summary(models[[enviro]])$vcov@x, 
+                     nrow = sqrt(length(summary(models[[enviro]])$vcov@x))) 
+  rownames(EEV_lmer) <- summary(models[[enviro]])$vcov@Dimnames[[1]]
+  colnames(EEV_lmer) <- summary(models[[enviro]])$vcov@Dimnames[[2]]
+  #remove EEV entries for all fixed effects other than id
+  #in this case, the only fixed effect to remove is stand.count
+  EEV_lmer <- EEV_lmer[which(rownames(EEV_lmer) != "stand.count"),
+                         which(colnames(EEV_lmer) != "stand.count")]
+  
+  #keep only the BLUEs for the id fixed effect
+  placeholder <- names(BLUEs)
+  BLUEs <- c(BLUEs, models[[enviro]]@beta[1:length(unique(phenoenv$id))])
+  names(BLUEs) <- c(placeholder, levels(models[[enviro]]@frame$id))
+  
+  EEVs[[enviro]] <- EEV_lmer
+}
+colnames(residuals) <- c("expt", "resid")
+residuals$resid <- as.numeric(residuals$resid)
+
+
+
+#almost exactly the same BLUEs
+cor(BLUEs, #lmer
+    ans1a$blues$BLUE) #StageWise
+BLUEs[1:5]
+ans1a$blues$BLUE[1:5]
+
+#Almost exactly the same EEV using lmer and StageWise
+differences <- c()
+for (enviro in unique(pheno1a$env)) {
+  differences <- c(differences, mean(abs(EEVs[[enviro]] - ans1a$EEV[[enviro]])))
+}
+differences
+EEVs$Hancock15[1:5,1:5] #lmer
+ans1a$EEV$Hancock15[1:5,1:5] #StageWise
+
+
+
+#example on how to calculate EEV manually
+#For instance, use Hancock15
+variance_raneff <- as.numeric(summary(models[["Hancock15"]])$varcor$block)
+variance_residual <- sigma(models[["Hancock15"]])^2
+
+#if the variance for the random effect is 0 it's equivalent to that random 
+#effect not being in the model and it can be ignored
+if (variance_raneff == 0) {
+  only_fixed <- TRUE
+} else {
+  lambda <- variance_residual/variance_raneff
+  only_fixed <- FALSE
+}
+
+
+
+#design matrices
+phenoenv <- pheno1a[pheno1a$env == "Hancock15",]
+phenoenv <- phenoenv[!is.na(phenoenv$total.yield),]
+phenoenv$stand.count <- scale(phenoenv$stand.count, scale = FALSE, center = TRUE) 
+X.id <- model.matrix(total.yield~id-1, data=phenoenv) #remove intercept.
+X.stand.count <- phenoenv$stand.count #fixed effect for a covariate is a
+#regression. design matrix of a regression contains the values for the variable
+colnames(X.stand.count) <- "stand.count"
+X.all <- cbind(X.id, X.stand.count)
+Z <- model.matrix(total.yield~as.factor(block) - 1, data=phenoenv)
+#Do all operations needed
+
+
+#manually calculate EEV
+#Make a design matrix mixing all fixed effects. Then, EEV for only 
+#id can be subsetted. 
+#This is equivalent to using a separate matrix for each fixed effect
+
+if (only_fixed) {
+  #If random effect variance == 0, we can completely ignore them
+  #EEV would be calculated as is there were only fixed effects in the model
+  EEV15 <- solve(t(X.all)%*%X.all)
+  EEV15 <- variance_residual*EEV15
+} else {
+  #if random effect variance != 0 we have to consider them for EEV calculation
+  full_mat1 <- cbind(t(X.all)%*%X.all, t(X.all)%*%Z)
+  full_mat2 <- cbind(t(Z)%*%X.all, (t(Z)%*%Z + lambda*diag(ncol(Z))))
+  full_mat <- rbind(full_mat1, full_mat2)
+  fullinv <- solve(full_mat)
+  EEV15 <- fullinv[1:ncol(X.all),1:ncol(X.all)]
+  EEV15 <- variance_residual*EEV15
+}
+
+#keep only EEV entries that correspond to id
+EEV15 <- EEV15[rownames(EEV15) %in% colnames(X.id),
+                         colnames(EEV15) %in% colnames(X.id)]
+mean(abs(EEVs$Hancock15 - EEV15)) #the only differences are rounding errors
+
+
+#merge EEV matrices from each environmet for their use in the second stage
+#It is done using the direct sum operator
+library(matrixcalc)
+placeholder_matrix <- matrix()
+for (i in 2:length(unique(pheno1a$env))) {
+  env1 <- unique(pheno1a$env)[i-1]
+  env2 <- unique(pheno1a$env)[i]
+  if (sum(is.na(placeholder_matrix)) > 0) {
+    placeholder_matrix <- direct.sum(EEVs[[env1]],EEVs[[env2]])
+  } else {
+    placeholder_matrix <- direct.sum(placeholder_matrix,EEVs[[env2]])
+  }
+}
+EEV_full <- placeholder_matrix
+dim(EEV_full)
+length(BLUEs)
+```
+
+The `Stage1` function returns a list with several results. List element "blue" is a data frame of the individual BLUEs per environment. Element "fit" contains the broad-sense heritability on a plot basis (H2) and the AIC.
+
+```{r}
+head(ans1a$blues)
+#lmer doesn't return AIC values. Therefore we can't compare them to StageWise
+ans1a$fit #StageWise
+H2#lmer
+#H2 estimation is different, but not by a large margin
+```
+
+To check for outliers and normality of the residuals, use the plots contained in list element "resid":
+
+```{r}
+#StageWise
+ans1a$resid$boxplot
+ans1a$resid$qqplot
+#lmer
+#A lot of residuals are 0 in lmer. They are not normal
+p1 <- ggplot(data=residuals,aes(y=.data$resid,x=.data$expt)) + 
+  ylab("Residual") + 
+  xlab("") +
+  stat_boxplot(outlier.color="red") +
+  theme_bw() + 
+  theme(axis.text.x=element_text(angle=90,vjust=0.5))
+p1
+p2 <- ggplot(data=residuals,aes(sample=.data$resid)) +
+  stat_qq() + 
+  stat_qq_line() + 
+  facet_wrap(~expt) + 
+  theme_bw() +
+  xlab("Expected") + 
+  ylab("Observed")
+p2
+#In lmer the model gets residuals equal to zero for all observations of 
+#non-repeated genotypes. When a genotype appears only once, it is possible to
+#fully explain its phenotype using the model effects
+#As a result, the residuals are not normal. This would be fixed if all genotypes
+#were replicated at least twice within each environment.
+
+#Example in Hancock15:
+phenoenv <- pheno1a[pheno1a$env == "Hancock15",]
+phenoenv <- phenoenv[!is.na(phenoenv$total.yield),]
+length(unique(phenoenv$id)) #total number of genotypes tested
+sum(duplicated(phenoenv$id)) #number or replicated genotypes
+length(unique(phenoenv$id)) - sum(duplicated(phenoenv$id)) #non-replicated
+```
+
+
+The reserved word "expt" in the input file, which is short for "experiment", directs Stage1 to fit separate models for each experiment within an environment. Then, in a second step, a single BLUE for each genotype in that environment is estimated, including the full var-cov matrix. 
+Compared to simply use "expt" as a factor in a single step, this two-step procedure within Stage1 allows for separate spatial models.
+
+The 2020 data file contains two experiments: a preliminary and advanced trial. Here is a comparison of using random row and range effects vs. a 2D spline, which requires the additional argument `spline` to indicate the names of the variables in the input file with the x and y coordinates. 
+
+```{r}
+effects <- data.frame(name=c("row","range","stand.count"),
+                      fixed=c(FALSE,FALSE,TRUE),
+                      factor=c(TRUE,TRUE,FALSE))
+effects
+model1 <- Stage1(filename=pheno1b.file, traits="total.yield",
+                effects=effects, solver="asreml")
+model1$fit
+
+unique(pheno1b$env)
+unique(pheno1b$expt)
+
+#this outer for loop is not needed here because there's only a single environment
+#I leave the outer loop so that the code is generalizable
+H2_df <- data.frame()
+models_env <- list()
+BLUEs_df <- c()
+for (enviro in unique(pheno1b$env)) {
+  phenoenv <- pheno1b[pheno1b$env == enviro,]
+  phenoenv <- phenoenv[!is.na(phenoenv$total.yield),]
+  
+  Envs <- c(Envs, rep(enviro, length(unique(phenoenv$id))))
+  
+  models_expt <- list()
+  EEV_expt <- matrix()
+  
+  if (length(unique(phenoenv$expt)) < 2)  {
+    stop("At least two experiments per environment needed")
+  }
+  
+  #iterate over all experiments within this environment
+  for (i in 1:length(unique(phenoenv$expt))) {
+
+    expt <- unique(phenoenv$expt)[i]
+    phenoexpt <- phenoenv[phenoenv$expt == expt,]
+    phenoexpt$row <- factor(phenoexpt$row) #cofactor
+    phenoexpt$range <- factor(phenoexpt$range) #cofactor
+    phenoexpt$stand.count <- as.numeric(phenoexpt$stand.count) #covariate
+    phenoexpt$stand.count <- scale(phenoexpt$stand.count, center = T, scale = F) 
+    #it's important to center the covariates
+    
+    models_expt[[expt]] <- lmer(total.yield ~ -1 + id + stand.count +
+                                    (1|row) + (1|range),
+                                    data=phenoexpt)
+    
+      
+    #extract H2
+    #random effect variances
+    variance_row <- as.numeric(summary(models_expt[[expt]])$varcor$row)
+    variance_range <- as.numeric(summary(models_expt[[expt]])$varcor$range)
+    variance_residual <- sigma(models_expt[[expt]])^2
+    
+    #fixed effect variances
+    #1) calculate design matrix
+    X.id <- model.matrix(total.yield~id-1, data=phenoexpt) #remove intercept.
+    X.stand.count <- as.matrix(phenoexpt$stand.count) #fixed effect for a covariate is a
+    #regression. design matrix of a regression contains the values for the variable
+    colnames(X.stand.count) <- "stand.count"
+    
+    #calculate fixed effects for each plot
+    #id effects:
+    # y = Xb + ... + epsilon
+    # b (vector of the genotypic fixed effects) can be retrieved from:
+    #"models[[enviro]]@beta[1:length(unique(phenoenv$id))]"
+    # X is the design matrix linking each obervation (each plot in the field) with
+    # its corresponding genotypic effect.
+    id_effects <- X.id%*%models_expt[[expt]]@beta[1:length(unique(phenoexpt$id))]
+    #stand.count value times its regression slope
+    #the slope is the fixed effect found after the id effects
+    #it's after the id effects because that's the order in which we wrote it in 
+    #the lmer formula
+    stand.count_effects <- X.stand.count%*%
+                          models_expt[[expt]]@beta[length(unique(phenoexpt$id))+1]
+    
+    #calculate variance for the fixed effects
+    id_variance <- var(id_effects)
+    stand.count_variance <- var(stand.count_effects)
+    
+    #Plot level heritability
+    H2_expt <- id_variance/(id_variance +
+                         variance_row + 
+                         variance_range + 
+                         variance_residual + 
+                         stand.count_variance) 
+    
+    H2_df <- rbind(H2_df, c(enviro, expt, H2_expt))
+    
+      
+    #calculate EEV (estimation error variance-covariance matrix for id effects)
+    EEV_lmer <- matrix(summary(models_expt[[expt]])$vcov@x, 
+                       nrow = sqrt(length(summary(models_expt[[expt]])$vcov@x))) 
+    rownames(EEV_lmer) <- summary(models_expt[[expt]])$vcov@Dimnames[[1]]
+    colnames(EEV_lmer) <- summary(models_expt[[expt]])$vcov@Dimnames[[2]]
+    #remove EEV entries for all fixed effects other than id
+    #in this case, the only fixed effect to remove is stand.count
+    EEV_lmer <- EEV_lmer[which(rownames(EEV_lmer) != "stand.count"),
+                           which(colnames(EEV_lmer) != "stand.count")]
+    
+    
+    #merge EEV of all expts
+    if (i == 1) {
+      EEV_expt <- EEV_lmer
+    } else {
+      EEV_expt <- direct.sum(EEV_expt,EEV_lmer)
+    }
+    
+    #merge BLUEs of al expts
+    placeholder <- data.frame(id = levels(models_expt[[expt]]@frame$id),
+                BLUEs =  models_expt[[expt]]@beta[1:length(unique(phenoexpt$id))],
+                expt = rep(expt, length(unique(phenoexpt$id))),
+                Stage1Error = paste0(rep(expt, length(unique(phenoexpt$id))),
+                                     ":",
+                                     levels(models_expt[[expt]]@frame$id))
+                )
+    
+    BLUEs_df <- rbind(BLUEs_df, placeholder)
+    
+  }
+
+
+  models_env[[enviro]][["within_experiment"]] <- models_expt
+  
+
+  rownames(EEV_expt) <- BLUEs_df$Stage1Error
+  colnames(EEV_expt) <- BLUEs_df$Stage1Error
+  EEVInv <- as(solve(EEV_expt),Class="dgCMatrix")
+
+
+
+  #Fix the variance for stage1Error to be 1. We have to scale it dividing it
+  #by the variance of the response variable because Sommer works that way.
+  #We fix the variance to be 1 because we don't want the model to scale EEV in 
+  #any way, but 1 is not the true stage1Error variance component. More on that later
+  Variance_scaled <- as.matrix(1/var(BLUEs_df$BLUEs))
+  model_Sommer <- mmec(BLUEs ~ id + expt -1, #Fixed effects = id + expt -1 means that
+                     #we remove the intercept (you could leave it if you prefer it)
+                     random = ~vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= BLUEs_df,
+                     verbose = FALSE
+  )
+  
+  models_env[[enviro]][["across_experiments"]] <- model_Sommer
+  
+
+  
+  #manually calculate EEV for the sommer model:
+  #design matrices
+  X.id <- model.matrix(BLUEs~id-1, data=BLUEs_df) #remove intercept.
+  X.expt <- model.matrix(BLUEs~expt-1, data=BLUEs_df) #remove intercept.
+  X.all <- cbind(X.id, X.expt)
+  Z <- model.matrix(BLUEs~Stage1Error - 1, data=BLUEs_df)
+
+  
+  
+  #manually calculate EEV
+  #variance of the random effect is extracted from EEV_expt in this case
+  #beacuse EEV_expt is already the variance covaraince structure multiplied by its
+  #corresponding variance coponent
+  variance_raneff <- mean(diag(EEV_expt)) - mean(EEV_expt)
+  #EEV_expt is already the variance covaraince structure multiplied by its
+  #corresponding variance coponent. Undo that multiplication to extract the 
+  #variance covariance structure
+  EEV_str <- EEV_expt/variance_raneff
+  variance_residual <- models_env[[enviro]][["across_experiments"]]$sigma[names(model_Sommer$sigma) == "units:isc:isc"]
+  lambda <- variance_residual/variance_raneff
+  
+  #reorder EEV_str so that it matches columns in Z
+  rownames(EEV_str) <- paste0("Stage1Error",rownames(EEV_str))
+  colnames(EEV_str) <- paste0("Stage1Error",colnames(EEV_str))
+  
+  EEV_str <- EEV_str[colnames(Z), colnames(Z)]
+  
+  
+  #if the variance for the random effect is 0 it's equivalent to that random 
+  #effect not being in the model and it can be ignored
+  if (variance_raneff == 0) {
+    only_fixed <- TRUE
+  } else {
+    lambda <- variance_residual/variance_raneff
+    only_fixed <- FALSE
+  }
+  
+  
+  if (only_fixed) {
+    #If random effect variance == 0, we can completely ignore them
+    #EEV would be calculated as is there were only fixed effects in the model
+    EEV <- solve(t(X.all)%*%X.all) 
+    EEV <- variance_residual*EEV
+  } else {
+    #if random effect variance != 0 we have to consider them for EEV calculation
+    full_mat1 <- cbind(t(X.all)%*%X.all, t(X.all)%*%Z)
+    full_mat2 <- cbind(t(Z)%*%X.all, (t(Z)%*%Z + lambda*solve(EEV_str)))
+    full_mat <- rbind(full_mat1, full_mat2)
+    #fullinv <- solve(full_mat) #doesn't work, matrix singular
+    fullinv <- pracma::pinv(full_mat) #use pseudoinverse to invert singular matrix
+    rownames(fullinv) <- rownames(full_mat)
+    colnames(fullinv) <- colnames(full_mat)
+    #nonsingularity
+    EEV <- fullinv[1:ncol(X.all),1:ncol(X.all)]
+    EEV <- variance_residual*EEV
+  }
+  
+  #keep only EEV entries that correspond to id
+  EEV <- EEV[rownames(EEV) %in% colnames(X.id),
+                           colnames(EEV) %in% colnames(X.id)]
+  
+  models_env[[enviro]][["EEV"]] <- EEV
+  
+}
+
+colnames(H2_df) <- c("env", "expt", "H2")
+
+goodbetas <- rownames(models_env[[enviro]][["across_experiments"]]$b) %in% pheno1b$id
+BLUEs2 <- models_env[[enviro]][["across_experiments"]]$b[goodbetas]
+names(BLUEs2) <- rownames(models_env[[enviro]][["across_experiments"]]$b)[goodbetas]
+
+#Extremely similar BLUEs
+cor(BLUEs2[match(model1$blues$id,names(BLUEs2))], #open source
+    model1$blues$BLUE) #StageWise
+BLUEs2[match(model1$blues$id,names(BLUEs2))][1:5]
+model1$blues$BLUE[1:5]
+
+#slightly different heritability estimation
+model1$fit #StageWise
+H2_df #Open source
+
+
+#small differences in EEV
+#The matrix that generates EEV happened to be not invertible
+#Therefore, we had to use the pseudoinverset to approximate EEV, but as a result
+#we incurred in some error
+#Still, our EEV has a very similar structure as the one returned by StageWise
+mean(abs(models_env[["Hancock20"]][["EEV"]] - model1$EEV$Hancock20))
+
+models_env[["Hancock20"]][["EEV"]][1:5,1:5]
+model1$EEV$Hancock20[1:5,1:5]
+
+
+
+
+#I'm not doing the equivalence for this because the "spats" solver is already
+#open source
+model2 <- Stage1(filename=pheno1b.file, traits="total.yield",
+                effects=effects[3,], solver="spats", spline=c("row","range"))
+model2$fit
+compare <- merge(model1$blues,model2$blues,by=c("id","env"))
+ggplot(data=compare,aes(x=BLUE.x,y=BLUE.y)) + 
+  geom_point() + 
+  xlab("i.i.d. Random Effects") +
+  ylab("2D Spline") + 
+  theme_bw() + 
+  geom_abline(intercept=0,slope=1) +
+  coord_cartesian(xlim=c(25,90),ylim=c(25,90)) + 
+  ggtitle("2020 Yield BLUEs (Mg/ha)")
+```
+
+The above figure shows that the BLUEs are similar with the two different models. A figure showing the 2D spline and spatial distribution of residuals is also returned when SpATS is used:
+
+```{r}
+model2$resid$spatial$advanced
+```
+
+Before proceeding to Stage 2, the BLUEs and variance-covariance matrices from the 2015-19 analysis and 2020 analysis need to be combined. (If other software is used for Stage 1, it can be incorporated in a similar manner.) The model with i.i.d. row and column effects is selected based on the higher estimate for H2.
+
+```{r}
+#StageWise
+stage1.blues <- rbind(ans1a$blues,model1$blues)
+stage1.EEV <- c(ans1a$vcov,model1$vcov)
+
+#Open source
+stage1.blues.open <- c(BLUEs,BLUEs2)
+stage1.EEV.open <- direct.sum(EEV_full,models_env[["Hancock20"]][["EEV"]])
+
+cor(stage1.blues$BLUE, stage1.blues.open)
+length(stage1.blues.open)
+dim(stage1.EEV.open)
+length(Envs)
+```
+
+### Marker data
+
+The `read_geno` function reads bi-allelic marker data as a CSV file. If you intend to run GWAS, the option `map=TRUE` indicates the first three columns of the input file are the marker name, chromosome, and position, followed by columns for the individuals. Map information is not used for genomic prediction and can be omitted by using `map=FALSE`, in which case the first column is the marker name and subsequent columns are individuals. The marker data should represent allele dosage, with numeric values between 0 and ploidy. (For compatibility with other software, the coding {-1,0,1} is also allowed for diploids.)
+
+The potato marker data were generated using an Infinium SNP array. Most clones were genotyped with Version 3 (V3) of the array, but some were genotyped with an earlier version (V2). Data from the two different versions were combined via BLUP using the function `merge_impute` from R package [polyBreedR](https://github.com/jendelman/polyBreedR).
+
+```{r}
+#I don't provide equivalent codes to these functions because they are already
+#open source and don't require ASReml license
+geno.file <- system.file("vignette_data", "geno1.csv", package = "StageWise")
+geno <- read.csv(geno.file,check.names=F)
+geno[1:4,1:6]
+
+geno <- read_geno(filename=geno.file, ploidy=4, map=TRUE, min.minor.allele=5, 
+                  dominance=T)
+``` 
+
+The function `read_geno` computes genomic relationship matrices from the markers. At a minimum, the additive (G) matrix is computed. When `dominance=TRUE`, the dominance (D) matrix is also computed. These matrices and other information needed for the `Stage2` function are stored in the returned object as an S4 class. 
+
+The command `inbreeding` returns genomic inbreeding coefficients, estimated from either the diagonal elements of the G matrix or the average dominance coefficient. As shown below, the two methods are very similar and have the same population mean. The negative inbreeding coefficient indicates excess heterozygosity relative to panmictic equilibrium, which may be expected when there is inbreeding depression. 
+
+```{r}
+x <- inbreeding(geno)
+head(x)
+apply(x,2,mean)
+
+ggplot(x,aes(x=F.G,y=F.D)) + geom_hex()
+```
+
+### Stage 2
+
+The `Stage2` function uses the BLUEs from Stage 1 as the response variable, as well as their variance-covariance matrix to partition micro-environmental variation from GxE. It is also possible to run `Stage2` without the covariance of the BLUEs from Stage 1 (EEV), e.g.,  when there are no replicated entries within environment. In this case, use `vcov=NULL`. The benefit of including the EEV information is reflected in the lower value of AIC, which is a penalized likelihood to measure goodness-of-fit.
+
+```{r}
+#StageWise
+#1) no EEV
+ans2a <- Stage2(data=stage1.blues, vcov=NULL)
+#2) EEV
+ans2b <- Stage2(data=stage1.blues, vcov=stage1.EEV)
+
+#data.frame(EEV=c(FALSE,TRUE), AIC=c(ans2a$aic,ans2b$aic))
+
+
+#Open source
+#1) Prepare data
+Stage1Output <- data.frame(BLUEs = stage1.blues.open,
+                       id = names(stage1.blues.open),
+                       Env = Envs)
+
+
+#We need to add to Stage1Output a column for stage 1 estimation error 
+Stage1Error <- paste0(Stage1Output$id,":",Stage1Output$Env)
+rownames(stage1.EEV.open) <- Stage1Error
+colnames(stage1.EEV.open) <- Stage1Error
+
+#model:
+#BLUEs = XE + Zg + s + gE
+#We need a column for BLUEs, environment name, genotypic id and stage1error
+sommerdf <- cbind(Stage1Output,
+                  Stage1Error)
+head(sommerdf)
+
+
+
+#When you want use a known variance-covariance matrix in Sommer mmec() function,
+#what you actually have to provide is the inverse of the 
+#matrix and it must be of the "dgCMatrix" class (sparse matrix)
+EEVInv <- as(solve(stage1.EEV.open),Class="dgCMatrix")
+
+#Fix the variance for stage1Error to be 1. We have to scale it dividing it
+#by the variance of the response variable because Sommer works that way.
+#We fix the variance to be 1 because we don't want the model to scale EEV in 
+#any way, but 1 is not the true stage1Error variance component. More on that later
+Variance_scaled <- as.matrix(1/var(sommerdf$BLUEs))
+
+```
+```{r eval=FALSE}
+
+#without EEV
+ans2a_open <- mmec(BLUEs ~ Env -1, #Fixed effects = Environment. -1 means that
+                     #we remove the intercept (you could leave it if you prefer it)
+                     random = ~vsc(isc(id)),  #vsc() is just an auxiliary function
+                       #used every time you want to specify details for a random
+                       #effect.
+                       #isc(id) means that we assume identity variance-covariance
+                       #structure for the "id" effect (genotypic effect)
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf,
+                     verbose = TRUE
+)
+
+```
+
+
+```{r}
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf)
+Env_effects <- ans2a_open$b
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+  ans2a_open$sigma[names(ans2a_open$sigma) == "id:isc:isc"], #genetic
+  ans2a_open$sigma[names(ans2a_open$sigma) == "units:isc:isc"]) #residual 
+ASRemlVars <- summary(ans2a$vars)$Variance
+variances_ans2a <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2a) <- rownames(summary(ans2a$vars))
+#almost same variances with Sommer and ASReml
+variances_ans2a
+
+#almost same aic
+ans2a$aic
+ans2a_open$AIC
+
+```
+```{r, eval=FALSE}
+
+#with EEV
+ans2b_open <- mmec(BLUEs ~ Env -1, #Fixed effects = Environment. -1 means that
+                     #we remove the intercept (you could leave it if you prefer it)
+                     random = ~vsc(isc(id)) + #vsc() is just an auxiliary function
+                       #used every time you want to specify details for a random
+                       #effect.
+                       #isc(id) means that we assume identity variance-covariance
+                       #structure for the "id" effect (genotypic effect)
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf,
+                     verbose = TRUE
+)
+
+```
+
+
+```{r}
+
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf)
+Env_effects <- ans2b_open$b
+Env_variance <- var(Xenv%*%Env_effects)
+
+#extract stage1error variance component from EEV
+Stage1Errorvar <- mean(diag(stage1.EEV.open)) - mean(stage1.EEV.open)
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+  ans2b_open$sigma[names(ans2b_open$sigma) == "id:isc:isc"], #genetic
+  ans2b_open$sigma[names(ans2b_open$sigma) == "units:isc:isc"], #residual
+  Stage1Errorvar) #stage1 estimation error
+ASRemlVars <- summary(ans2b$vars)$Variance
+variances_ans2b <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2b) <- rownames(summary(ans2b$vars))
+#almost same variances with Sommer and ASReml
+variances_ans2b
+
+
+#almost same aic
+ans2b$aic
+ans2b_open$AIC
+
+```
+
+Several other pieces of information are in the list output from `Stage2`. The variance components are contained in "vars" as an S4 class, which is used by the `blup_prep` function (see below). As shown above, the `summary` command returns a matrix with two columns: the first is the variance, in units of the trait; the second is the proportion of variance excluding the environment effect, which makes the result for genotype comparable to heritability (environment basis). Including the Stage1 var-cov matrix for the BLUEs enables partitioning of the residual into GxE and Stage1 error.
+
+The above Stage 2 analysis did not include the marker data. To partition the genotype effects into additive and non-additive effects, the output from `read_geno` is included in the function call. StageWise has two ways of modeling non-additive effects. The argument non.add="g.resid" leads to a genetic residual, with independent and identically distributed (iid) effects. When non.add="dom" (which requires that `read_geno` was run with dominance=TRUE), the covariance of the non-additive effects follows the D matrix. To omit non-additive effects, use non.add="none". The AIC can be used to assess which model is better.
+
+The following example also shows the `silent=FALSE` option (default is TRUE), which shows the convergence progress from ASReml-R.
+
+```{r}
+ans2c <- Stage2(data=stage1.blues,vcov=stage1.EEV,geno=geno,
+                silent=FALSE, non.add="g.resid")
+ans2d <- Stage2(data=stage1.blues,vcov=stage1.EEV,geno=geno,
+                silent=FALSE, non.add="dom")
+
+#data.frame(non.add=c("g.resid","dom"),AIC=c(ans2c$aic,ans2d$aic))
+
+
+#not all individuals are genotyped. 
+#Sommer can't handle missing levels of the effect (id) in the variance-covariance
+#matrix (G).
+#We have to remove all entries whose id is not in G
+G <- geno@G
+D <- geno@D
+dim(G)
+length(unique(sommerdf$id))
+
+#this is needed later to scale variance components
+meanG <- mean(diag(geno@G))-mean(geno@G)
+meanD <- mean(diag(geno@D))-mean(geno@D)
+
+#create a relationship matrix that includes non-genotyped individuals
+#We assume that nongenotyped individuals are i.i.d. (variance 1, covariance
+#0 with all other genotypes.)
+genotyped_id <- unique(sommerdf$id)[unique(sommerdf$id) %in% rownames(G)]
+non_genotyped_id <- setdiff(unique(sommerdf$id), genotyped_id)
+
+# NonGenoEEV <- diag(length(non_genotyped_id))
+# rownames(NonGenoEEV) <- non_genotyped_id
+# colnames(NonGenoEEV) <- non_genotyped_id
+# 
+# #additive matrix
+# GoodG <- direct.sum(as.matrix(G)[genotyped_id,genotyped_id], NonGenoEEV)
+# colnames(GoodG) <- rownames(GoodG)
+# #now we have all individuals in G matrix
+# dim(GoodG)
+# length(unique(sommerdf$id))
+# 
+# #Repeat for dominance matrix
+# GoodD <- direct.sum(as.matrix(D)[genotyped_id,genotyped_id], NonGenoEEV)
+# colnames(GoodD) <- rownames(GoodD)
+# #now we have all individuals in G matrix
+# dim(GoodD)
+# length(unique(sommerdf$id))
+# 
+# 
+# #Extract inbreeding coefficients for all genotypes from G:
+# ploidy <- 4
+# Fg <- (diag(GoodG)-1)/(ploidy-1)
+# 
+# #include Fg into sommerdf:
+# #1) reorder
+# Fg <- Fg[match(sommerdf$id, names(Fg))]
+# identical(sommerdf$id, names(Fg))
+# sommerdf <- cbind(sommerdf, Fg)
+# 
+# 
+# #Precalculate the inverse of G and D matrices for Sommer
+# Ginv <- as(solve(as.matrix(GoodG)),Class="dgCMatrix")
+# Dinv <- as(solve(as.matrix(GoodD)),Class="dgCMatrix")
+
+
+Ginv <- as(solve(as.matrix(G)),Class="dgCMatrix")
+Dinv <- as(solve(as.matrix(D)),Class="dgCMatrix")
+
+sommerdf_smaller <- sommerdf[-which(sommerdf$id %in% non_genotyped_id),]
+
+#There are more genotypes in the genomic relationship matrix than 
+#with BLUEs. BLUPs for unphenotpyed genotypes will be predicted
+dim(Ginv)
+length(unique(sommerdf_smaller$id))
+
+
+Fg <- geno@Fg
+
+#include Fg into sommerdf:
+#1) reorder
+Fg <- Fg[match(sommerdf_smaller$id, names(Fg))]
+identical(sommerdf_smaller$id, names(Fg))
+sommerdf_smaller <- cbind(sommerdf_smaller, Fg)
+
+#leave only records for genotypes with marker data!
+EEVInv <- as(solve(stage1.EEV.open[sommerdf_smaller$Stage1Error,
+                                     sommerdf_smaller$Stage1Error]),
+              Class="dgCMatrix")
+Variance_scaled <- as.matrix(1/var(sommerdf_smaller$BLUEs))
+
+Stage1Error_geno <- mean(diag(stage1.EEV.open[sommerdf_smaller$Stage1Error,
+                                     sommerdf_smaller$Stage1Error])) -
+  mean(stage1.EEV.open[sommerdf_smaller$Stage1Error,
+                                     sommerdf_smaller$Stage1Error])
+
+```
+
+
+```{r, eval=FALSE}
+  
+
+#without dominance
+ans2c_open <- mmec(BLUEs ~ Env -1, #Fixed effects = Environment. -1 means that
+                     #we remove the intercept (you could leave it if you prefer it)
+                     random = ~vsc(isc(id), Gu = Ginv) +
+                     #additive genotypic effects, following G matrix
+                     vsc(isc(id)) + #Genotypic effects not captured by the 
+                     #addtivie effect, i.i.d.
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+
+```
+
+
+```{r}
+
+summary(ans2c_open)$varcomp
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_smaller)
+Env_effects <- ans2c_open$b
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+  ans2c_open$sigma[names(ans2c_open$sigma) == "id:Ginv:isc:isc"]*meanG, #additive
+  ans2c_open$sigma[names(ans2c_open$sigma) == "id:isc:isc"], #other genetic
+  ans2c_open$sigma[names(ans2c_open$sigma) == "units:isc:isc"],
+  Stage1Error_geno) #residual 
+ASRemlVars <- summary(ans2c$vars)$Variance
+variances_ans2c <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2c) <- rownames(summary(ans2c$vars))
+#Extremely similar variances
+variances_ans2c
+
+#similar aic
+ans2c$aic
+ans2c_open$AIC
+
+
+
+
+
+SommerBLUPs <- ans2c_open$uList$`vsc(isc(id), Gu = Ginv)` + mean(ans2c_open$b)
+#StageWise
+prep0 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=geno,
+              vars=ans2c$vars)
+ASRemlBLUPs <- blup(prep0, geno=geno, what="BV")
+
+
+#Extremely similar BLUPs
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+ASRemlBLUPs$value[1:5]
+SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))][1:5]
+
+```
+
+
+```{r, eval=FALSE}
+
+
+
+#with dominance
+ans2d_open <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id), Gu = Ginv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(id), Gu = Dinv) + #dominance genotypic
+                                #effects
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+
+
+```
+
+
+```{r}
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_smaller)
+Env_effects <- ans2d_open$b[unique(sommerdf_smaller$Env),]
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+#heterosis effects for all observations 
+XFg <- sommerdf_smaller$Fg
+FgEffects <- ans2d_open$b["Fg",]
+Fg_variance <- var(XFg*FgEffects)
+
+#heterosis effects for each genotype
+#extract XFg from geno, not from the model
+#In the model, there are repeated Fg coefficients for genotypes that had more
+#than one BLUE (genotypes present in more than one environment) and there are 
+#no Fg coefficients for genotypes that were not phenotyped and had no BLUEs
+#If we take Fg from geno, there are no such problems
+XFg <- geno@Fg
+heterosis_effects <- XFg*FgEffects
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis_effects <- heterosis_effects[match(rownames(ans2d_open$uList$`vsc(isc(id), Gu = Ginv)`),
+                        names(heterosis_effects))]
+
+ 
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+  ans2d_open$sigma[names(ans2d_open$sigma) == "id:Ginv:isc:isc"]*meanG, #additive
+    ans2d_open$sigma[names(ans2d_open$sigma) == "id:Dinv:isc:isc"]*meanD, #dominance
+  Fg_variance, #heterosis
+  ans2d_open$sigma[names(ans2d_open$sigma) == "units:isc:isc"], #residual
+  Stage1Error_geno) #stage1 estimation error
+ASRemlVars <- summary(ans2d$vars)$Variance
+variances_ans2d <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2d) <- rownames(summary(ans2d$vars))
+#almost same variances 
+variances_ans2d
+
+
+#almost same aic
+ans2d$aic
+ans2d_open$AIC
+
+
+
+
+SommerBLUPs <- ans2d_open$uList$`vsc(isc(id), Gu = Ginv)` +
+              ans2d_open$uList$`vsc(isc(id), Gu = Dinv)` + 
+              heterosis_effects +
+              mean(Env_effects)
+#StageWise
+prep0 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=geno,
+              vars=ans2d$vars)
+ASRemlBLUPs <- blup(prep0, geno=geno, what="GV")
+
+
+#Extremely similar BLUPs
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+ASRemlBLUPs$value[1:5]
+SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))][1:5]
+
+
+```
+
+Based on the AIC values, we select the model with dominance. To compare AIC values for models with marker data to models without marker data, one needs to ensure that all individuals analyzed in Stage1 are in the marker data file. Because Stage2 excludes ungenotyped individuals from the analysis, the populations will not be the same. In this potato dataset, there are 1294 clones in the phenotype file but only 943 with marker data. 
+
+```{r}
+summary(ans2c$vars)
+summary(ans2d$vars)
+```
+
+The output for the dominance model includes rows for "dominance" and "heterosis"; the former is based on the variance of a random effect with zero mean, while the latter is due to the mean ([Varona et al. 2018](https://doi.org/10.3389/fgene.2018.00078)). 
+
+### Pedigree data
+
+Estimating additive relationships using both marker and pedigree data is often beneficial because they have complementary properties. Unlike the G matrix, the A matrix is "sparse", meaning it has zero covariance between unrelated individuals. However, the A matrix does not account for segregation within biparental families or capture LD between founders. The G and A matrices can be combined into an "H" matrix, which also allows ungenotyped individuals to be included in the relationship matrix ([Legarra et al. 2009](https://doi.org/10.3168/jds.2009-2061); [Christensen and Lund 2010](https://doi.org/10.1186/1297-9686-42-2)). (The inclusion of ungenotyped individuals is only available with the genetic residual model.)
+
+To illustrate this feature, a three-column pedigree file for the potato population is included with the package. When combining the G and A matrices, their relative weights must be specified using the argument `w` in `read_geno`, such that H = (1-w)G + wA. 
+```{r}
+ped.file <- system.file("vignette_data", "ped.csv", package = "StageWise")
+ped <- read.csv(ped.file)
+#When you use read_geno with pedigree information output@G is actually 
+#the H matrix!
+geno2 <- read_geno(geno.file,ploidy=4,map=TRUE,ped=ped,w=0.1,dominance = TRUE)
+
+#read_geno doesn't return the A and H matrices. We can calculate them manually
+ped2 <- data.frame(id=1:nrow(ped),
+                    parent1=match(ped$parent1,ped$id,nomatch=0),
+                    parent2=match(ped$parent2,ped$id,nomatch=0))
+A <- as(AGHmatrix::Amatrix(ped2,ploidy=geno2@ploidy),"symmetricMatrix")
+rownames(A) <- ped$id
+colnames(A) <- ped$id
+Asmall <- A[rownames(geno2@G),colnames(geno2@G)] #leave only common individuals in 
+#matrices A and G
+
+#Calculate H matrix:
+w <- 0.1 #blending parameter
+H <- (1-w)*G + w*Asmall
+#Manually calculated H matrix is similar to the matrix calculated by read_geno
+mean(abs(geno2@G - H))
+```
+```{r}
+ans2e <- Stage2(data=stage1.blues,vcov=stage1.EEV,geno=geno2,non.add="dom")
+ans2e$aic
+summary(ans2e$vars)
+
+#
+prep0 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=geno2,
+              vars=ans2e$vars)
+ASRemlBLUPs <- blup(prep0, geno=geno2, what="GV")
+
+length(unique(sommerdf$id)) #there are 1294 genotypes with stage1 BLUEs
+dim(A) #there are 1372 genotypes in the pedigree
+dim(geno2@G) #there are 943 genotpes with marker data
+#only 942 out of 1294 phenotyped individuals are present in the pedigree
+sum(unique(sommerdf$id) %in% rownames(A)) 
+#all 943 genotyped individuals are in the pedigree
+sum(rownames(A) %in% rownames(geno2@G)) 
+#we still only have predictions for the genotypes with marker
+#data in spite of using pedigree information
+dim(ASRemlBLUPs)
+```
+
+The above result shows that blending G and A at w=0.1 slightly reduced the AIC and shifted variance from the non-additive to additive component. One way to select the blending parameter is based on AIC. When a vector of w values is provided to `read_geno`, the function returns a list output corresponding to those values. For numerical conditioning, a minimum threshold of 1e-5 is used for w.
+
+```{r}
+w.vec <- c(1e-5, seq(0.2,0.8,by=0.2))
+geno <- read_geno(geno.file,ploidy=4,map=TRUE,ped=ped,w=w.vec,dominance=TRUE)
+
+result <- data.frame(w=w.vec, aic=numeric(5), h2=numeric(5))
+ans2 <- vector("list",5)
+for (i in 1:5) {
+  ans2[[i]] <- Stage2(data=stage1.blues,vcov=stage1.EEV,geno=geno[[i]],non.add="dom")
+  result$aic[i] <- ans2[[i]]$aic
+  result$h2[i] <- summary(ans2[[i]]$vars)[2,2]
+}
+
+#The process above can be easily replicated in Sommer, but as it's slower than
+#ASReml it could take a while to run. Instead, I will just show here how to 
+#do the modelling in Sommer with the best value for w found by ASReml. 
+#To find the best w value with Sommer, just do a different Sommer model 
+#for each w value and select the one with smallest AIC.
+
+
+
+#with H matrix
+#When reading the geno.file using pedigree,
+#the G matrix in geno is actually the H matrix
+Hinv <- as(solve(as.matrix(geno[[which.min(result$aic)]]@G)),Class="dgCMatrix")
+#needed later to scale variances
+meanH <- mean(diag(geno[[which.min(result$aic)]]@G)) -
+          mean(geno[[which.min(result$aic)]]@G)
+
+
+```
+
+
+```{r, eval=FALSE}
+
+ans2_open <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id), Gu = Hinv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(id), Gu = Dinv) + #dominance genotypic
+                                #effects
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+
+
+```
+
+
+```{r}
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_smaller)
+Env_effects <- ans2_open$b[unique(sommerdf_smaller$Env),]
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+# #heterosis effects for all observations 
+# #needed to calculate heterosis variance component
+# XFg <- sommerdf_smaller$Fg
+# FgEffects <- ans2d_open$b["Fg",]
+# Fg_variance <- var(XFg*FgEffects)
+
+
+#heterosis effects for each genotype
+#extract XFg from geno, not from the model
+#In the model, there are repeated Fg coefficients for genotypes that had more
+#than one BLUE (genotypes present in more than one environment) and there are 
+#no Fg coefficients for genotypes that were not phenotyped and had no BLUEs
+#If we take Fg from geno, there are no such problems
+XFg <- geno2@Fg
+FgEffects <- ans2_open$b["Fg",]
+heterosis_effects <- XFg*FgEffects
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis_effects <- heterosis_effects[match(rownames(ans2_open$uList$`vsc(isc(id), Gu = Hinv)`),
+                        names(heterosis_effects))]
+Fg_variance <- var(heterosis_effects)
+ 
+
+
+SommerBLUPs <- ans2_open$uList$`vsc(isc(id), Gu = Hinv)` +
+              ans2_open$uList$`vsc(isc(id), Gu = Dinv)` + 
+              heterosis_effects +
+              mean(Env_effects)
+#StageWise
+ans2best <- ans2[[which.min(result$aic)]]
+prep0 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=geno[[which.min(result$aic)]],
+              vars=ans2best$vars)
+ASRemlBLUPs <- blup(prep0, geno=geno[[which.min(result$aic)]], what="GV")
+
+
+#Extremely similar BLUPs
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+ASRemlBLUPs$value[1:5]
+SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))][1:5]
+
+
+
+
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+  ans2_open$sigma[names(ans2_open$sigma) == "id:Hinv:isc:isc"]*meanH, #additive
+    ans2_open$sigma[names(ans2_open$sigma) == "id:Dinv:isc:isc"]*meanD, #dominance
+  Fg_variance, #heterosis
+  ans2_open$sigma[names(ans2_open$sigma) == "units:isc:isc"], #residual
+  Stage1Error_geno) #stage1 estimation error
+ASRemlVars <- summary(ans2best$vars)$Variance
+variances_ans2 <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2) <- rownames(summary(ans2best$vars))
+#Extremely similar variances with Sommer and ASReml 
+variances_ans2
+
+
+#almost same aic
+ans2best$aic
+ans2_open$AIC
+
+
+
+axis.scaling <- diff(range(result$h2))/diff(range(result$aic))
+result$y2 <- (result$aic-min(result$aic))*axis.scaling + min(result$h2)
+y2lab <- round(seq(min(result$aic),max(result$aic),length.out=5))
+y2axis <- y2lab-min(result$aic) + min(result$h2)/axis.scaling
+
+ggplot(result) + 
+  geom_line(mapping=aes(x=w,y=h2)) +
+  geom_line(mapping=aes(x=w,y=y2),colour="red") +
+  scale_y_continuous(name="Genomic h2",
+                     sec.axis=sec_axis(trans~./axis.scaling,name="AIC",
+                                       breaks=y2axis,
+                                       labels=y2lab)) + 
+  theme_bw() +  
+  theme(axis.text.y.right=element_text(colour="red"),
+        axis.title.y.right=element_text(colour="red")) +
+  ggtitle("Blending G and A for Yield")
+```
+
+Based on the above figure, the blending parameter w=0.4 is chosen, at which there is no longer much dominance variance. The optimal value for w will not be the same for all traits. 
+
+```{r}
+w.vec[3]
+genoH <- geno[[3]] 
+ans2H <- ans2[[3]]
+summary(ans2H$vars)
+```
+
+To include ungenotyped individuals in the H matrix, put a fourth column in the pedigree data frame with binary (0/1) values to indicate which individuals should be included.
+
+### BLUP Reliability
+
+The calculation of BLUPs is split into two functions: `blup_prep` and `blup`. The computationally intensive steps occur in `blup_prep`, which combines the phenotype and genotype information used in `Stage2` with the variance component estimates to estimate the var-cov matrix of the predicted random effects. The `blup` command extracts the appropriate linear combination of predictions based on the argument "what", which has 5 possible values:
+
+* AV = additive values 
+
+* BV = breeding values
+
+* GV = genotypic values
+
+* AM = additive marker effects
+
+* DM = dominance marker effects
+
+The "values" are properties of individuals, as opposed to markers. Breeding values should be used for parent selection, while genotypic values should be used for clone selection. For diploids, the AV and BV are equivalent. For polyploids, if the dominance model was used, the BV includes a portion of the dominance. GV is the sum of additive and non-additive values. When predicting values, the software also returns the predicted reliability r2, which is the squared correlation between the true and predicted values (assuming the model is correct).
+
+The following code illustrates the prediction of genotypic values:
+
+```{r}
+prep1 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=genoH,
+              vars=ans2H$vars)
+GV1 <- blup(prep1, geno=genoH, what="GV")
+head(GV1)
+
+
+#Sommer computes reliability for all random effects
+reliabilities <- sommer::r2(ans2_open)
+head(reliabilities$`vsc(isc(id), Gu = Hinv)`)
+head(reliabilities$`vsc(isc(id), Gu = Dinv)`)
+```
+
+The figure below illustrates how the reliability of genotypic value predictions is typically higher when using marker data because it improves estimation of the additive component. 
+
+```{r,fig.height=3,fig.width=3}
+
+#predict genotypic values without marker data
+prep2 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              vars=ans2b$vars)
+GV2 <- blup(prep2, what="GV")
+
+plot.data <- merge(GV2,GV1,by="id")
+ggplot(plot.data,aes(x=r2.x,y=r2.y)) +
+  geom_point() +
+  ggtitle("GV Reliability") +
+  theme_bw() + 
+  xlab("Without markers") + 
+  ylab("With markers") + 
+  coord_fixed(ratio=1) + 
+  ylim(0.4,1) + 
+  xlim(0.4,1) + 
+  geom_line(data=data.frame(x=c(0.4,1),y=c(0.4,1)),
+            mapping=aes(x=x,y=y),
+            linetype=2)
+```
+
+The `blup_prep` function allows for masking the phenotypes of some individuals before making the predictions, which allows for cross-validation. All else being equal, predictions for individuals without phenotypes, which is called marker-based selection, have lower reliability than predictions for individuals with phenotypes, which is called marker-assisted selection. To illustrate, we will mask the phenotypes for the most recent cohort of breeding lines in the dataset (which have names beginning with "W17") and compare with the previous prediction.
+
+
+When masking, we only directly use training set data for the BLUP calculation. However, finding the BLUPs requires the variances estimated by the model, and the model was calibrated using all data (training set + test set). As a result, we are not performing a truly fair cross-validation, but it is much faster than estimating new variances for each cross-validation fold. If you still want to make this kind of cross-validation, you can do it in sommer as seen in the following code:
+
+```{r, fig.height=3,fig.width=3}
+#StageWise
+id <- stage1.blues$id
+mask <- data.frame(id=unique(id[substr(id,1,3)=="W17"]))
+head(mask)
+
+prep3 <- blup_prep(data=stage1.blues,
+              vcov=stage1.EEV,
+              geno=genoH,
+              vars=ans2H$vars,
+              mask=mask)
+GV3 <- blup(prep3, geno=genoH, what="GV")
+
+plot.data <- merge(GV3, GV1, by="id")
+plot.data <- plot.data[plot.data$id %in% mask$id,]
+
+ggplot(plot.data,aes(x=r2.x,y=r2.y)) +
+  geom_point() + 
+  theme_bw() + 
+  ggtitle("Reliability") +
+  xlab("MBS") + 
+  ylab("MAS") + 
+  coord_fixed(ratio=1) + 
+  geom_line(data=data.frame(x=c(0.3,0.8),y=c(0.3,0.8)),
+            mapping=aes(x=x,y=y),
+            linetype=2)
+
+
+
+
+
+
+#Sommer
+#Mask the data (replace BLUEs with NAs)
+sommerdf_mask <- sommerdf_smaller
+sommerdf_mask$BLUEs[which(sommerdf_mask$id %in% mask$id)] <- NA
+
+
+#To calculate BLUPs with known variances, just fix all variance terms 
+#and perform a single REML iteration:
+ans2mask <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id,
+                                  theta = matrix(ans2_open$sigma[["id:Hinv:isc:isc"]]/
+                                         var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)), 
+                                  Gu = Hinv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(id,
+                                  theta = matrix(ans2_open$sigma[["id:Dinv:isc:isc"]]/
+                                         var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3)),
+                                  Gu = Dinv) + #dominance genotypic
+                                #effects
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = matrix(1/var(sommerdf_smaller$BLUEs)), #initial 
+                               #value for the variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units,
+                                   theta = matrix(ans2_open$sigma[["units:isc:isc"]]/
+                                         var(sommerdf_smaller$BLUEs)),
+                                  thetaC =  matrix(3))), #residuals. isc(units) means
+                     #that we assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_mask,
+                     verbose = TRUE,
+                     nIters=1 #as we already know the variances, a single 
+                    #REML iteration is enough
+)
+
+#rename BLUP names to be shorter:
+names(ans2mask$uList) <- c("Additive", "Dominance", "Stage1Error")
+
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_mask)
+Env_effects <- ans2mask$b[unique(sommerdf_mask$Env),]
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+#heterosis
+XFg <- geno[[which.min(result$aic)]]@Fg
+FgEffects <- ans2mask$b["Fg",]
+heterosis_effects <- XFg*FgEffects
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis_effects <- heterosis_effects[match(rownames(ans2mask$uList$Additive),
+                        names(heterosis_effects))]
+
+
+SommerBLUPs <- ans2mask$uList$Additive +
+              ans2mask$uList$Dominance + 
+              heterosis_effects +
+              mean(Env_effects)
+
+#Extremely similar BLUPs after masking
+cor(GV3$value, #StageWise
+    SommerBLUPs[match(GV3$id,rownames(SommerBLUPs))]) #Sommer
+```
+
+Using the `mask` argument, one can also specify that individuals are masked only in some environments, which is useful for assessing the accuracy of prediction into new environments based on phenotypes in other environments. This idea is revisited in Vignette 2.
+
+### Marker effects and GWAS
+
+Using what="AM" or "DM" leads to the prediction of additive or dominance marker effects, respectively, in `blup`. This can be a convenient way to save the results of a training set analysis to predict future individuals. Multiplying the additive marker effects by the matrix of (centered) marker dosages to obtain additive values is equivalent (up to a constant) to directly predicting the additive values using what="AV", provided there has been no blending with the pedigree relationship matrix:
+
+```{r,fig.height=3,fig.width=3}
+#w = 0
+prep <- blup_prep(data=stage1.blues,
+                  vcov=stage1.EEV,
+                  geno=geno[[1]],
+                  vars=ans2[[1]]$vars)
+
+marker.effects <- blup(data=prep, geno=geno[[1]], what="AM")
+head(marker.effects)
+AV1 <- predict(geno[[1]], marker.effects)
+
+#compare with G-BLUP
+AV2 <- blup(data=prep, geno=geno[[1]], what="AV")
+plot.data <- merge(AV1, AV2, by="id")
+ggplot(plot.data,aes(x=value.x,y=value.y)) + 
+  geom_point() + 
+  xlab("RR-BLUP") + 
+  ylab("G-BLUP") + 
+  theme_bw()
+```
+
+This equivalency also holds for genotypic values (A + D):
+
+```{r}
+DM <- blup(data=prep, geno=geno[[1]], what="DM")
+DV1 <- predict(geno[[1]], DM)
+GEGV1 <- data.frame(id=AV1$id, value=AV1$value + DV1$value)
+
+GEGV2 <- blup(data=prep, geno=geno[[1]], what="GV")
+plot.data <- merge(GEGV1,GEGV2,by="id")
+
+ggplot(plot.data,aes(x=value.x,y=value.y)) + 
+  geom_point() + 
+  xlab("RR-BLUP") + 
+  ylab("GD-BLUP") + 
+  theme_bw()
+```
+
+
+The marker effects can be standardized to compute GWAS -log10(p) scores that are equivalent to the traditional fixed effect method ([Duarte et al. (2014)](http://www.biomedcentral.com/1471-2105/15/246); [Bernal Rubio et al. 2016](https://doi.org/10.1111/age.12378)). This calculation is easily parallelized, and the argument `gwas.ncore` specifies how many cores to use (the default is 0, which skips computing the GWAS scores). The `gwas_threshold` command computes the -log10(p) threshold for QTL discovery based on an effective number of markers ([Moskvina and Schmidt, 2008](https://doi.org/10.1002/gepi.20331)), and `manhattan_plot` displays the result. For yield there were no significant QTL, so results for the vine maturity trait are shown instead. 
+
+```{r,fig.height=3,fig.width=4}
+effects <- data.frame(name="block",fixed=FALSE,factor=TRUE)
+ans1vm <- Stage1(filename=pheno1a.file,traits="vine.maturity",
+                effects=effects,solver="asreml")
+ans2vm <- Stage2(data=ans1vm$blues, vcov=ans1vm$vcov, geno=geno[[1]], 
+                 non.add="dom")
+
+prep <- blup_prep(ans1vm$blues, ans1vm$vcov, geno[[1]], ans2vm$vars)
+gwas.ans <- blup(prep, geno[[1]], what="AM", gwas.ncore=2)
+head(gwas.ans)
+gwas_threshold(geno[[1]], alpha=0.05, n.core=2)
+
+
+
+
+#Sommer alternative
+#Sommer function GWAS() is based on the mmer() solver, which uses the 
+#Direct-Inversion Newton-Raphson or average information algorithm for variance 
+#estimation. It works fine, but it's not exactly equivalent to ASReml. That's the reason 
+#why in the previous examples we have been using mmec() solver, which uses the 
+#Henderson mixed model equations and the Average Information algorithm and it's 
+#equivalent to ASReml. 
+
+#There is no option to use GWAS() with the mmec() solver, but it's possible to
+#perform a regular GBLUP with mmec() to estimate the variances and subsequently
+#fixing these variances in GWAS() function, which is equivalent to ASReml
+
+
+
+#Repeat stage1 for vine.maturity trait
+library(lme4)
+models <- list()
+BLUEs <- c()
+EEVs <- list()
+Envs <- c()
+H2 <- c()
+residuals <- data.frame()
+for (enviro in unique(pheno1a$env)) {
+  phenoenv <- pheno1a[pheno1a$env == enviro,]
+  #1) remove entries with missing values for yield
+  phenoenv <- phenoenv[!is.na(phenoenv$vine.maturity),]
+  
+  Envs <- c(Envs, rep(enviro, length(unique(phenoenv$id))))
+  
+  phenoenv$id <- factor(phenoenv$id)
+  phenoenv$block <- factor(phenoenv$block) #cofactor
+  #Important to center!
+  #If you don't center the data, EEV calculation will be massively off!!!
+  
+  #remove the intercept in the model!
+  #It's important for correct EEV calculation
+  
+  #Make sure the first fixed effect in the formula is id!
+  models[[enviro]] <- lmer(vine.maturity ~ -1 + id + (1|block) ,
+                        data=phenoenv)
+  #If you get this message:
+  #boundary (singular) fit: see help('isSingular')
+  #It means that the estimated variance for the random effect was 0. It's fine
+  #because we are interested in the fixed effects of id.
+  
+
+  #extract H2
+  #random effect variances
+  variance_block <- as.numeric(summary(models[[enviro]])$varcor$block)
+  variance_residual <- sigma(models[[enviro]])^2
+  
+  #fixed effect variances
+  #1) calculate design matrix
+  X.id <- model.matrix(vine.maturity~id-1, data=phenoenv) #remove intercept.
+
+  #calculate fixed effects for each plot
+  #id effects:
+  # y = Xb + ... + epsilon
+  # b (vector of the genotypic fixed effects) can be retrieved from:
+  #"models[[enviro]]@beta[1:length(unique(phenoenv$id))]"
+  # X is the design matrix linking each obervation (each plot in the field) with
+  # its corresponding genotypic effect.
+  id_effects <- X.id%*%models[[enviro]]@beta[1:length(unique(phenoenv$id))]
+
+  #calculate variance for the fixed effects
+  id_variance <- var(id_effects)
+  
+  #Plot level heritability
+  H2 <- c(H2, id_variance/(id_variance +
+                       variance_block + 
+                       variance_residual) )
+  
+  
+  #extract residuals
+  resid <- unlist(summary(models[[enviro]])$residuals)
+  expt <- rep(enviro, length(resid))
+  tmp <- data.frame(cbind(expt, resid))
+  residuals <- rbind(residuals, tmp)
+  
+  
+  #calculate EEV (estimation error variance-covariance matrix for id effects)
+  EEV_lmer <- matrix(summary(models[[enviro]])$vcov@x, 
+                     nrow = sqrt(length(summary(models[[enviro]])$vcov@x))) 
+  rownames(EEV_lmer) <- summary(models[[enviro]])$vcov@Dimnames[[1]]
+  colnames(EEV_lmer) <- summary(models[[enviro]])$vcov@Dimnames[[2]]
+  #remove EEV entries for all fixed effects other than id
+  #in this case, id is the only fixed effect. Nothing to remove
+  
+  #keep only the BLUEs for the id fixed effect
+  placeholder <- names(BLUEs)
+  BLUEs <- c(BLUEs, models[[enviro]]@beta[1:length(unique(phenoenv$id))])
+  names(BLUEs) <- c(placeholder, levels(models[[enviro]]@frame$id))
+  
+  EEVs[[enviro]] <- EEV_lmer
+}
+colnames(residuals) <- c("expt", "resid")
+residuals$resid <- as.numeric(residuals$resid)
+
+
+
+#almost exactly the same BLUEs
+cor(BLUEs, #lmer
+    ans1vm$blues$BLUE) #StageWise
+BLUEs[1:5]
+ans1vm$blues$BLUE[1:5]
+
+#Almost exactly the same EEV
+differences <- c()
+for (enviro in unique(pheno1a$env)) {
+  differences <- c(differences, mean(abs(EEVs[[enviro]] - ans1vm$EEV[[enviro]])))
+}
+differences
+EEVs$Hancock15[1:5,1:5]
+ans1vm$EEV$Hancock15[1:5,1:5]
+
+
+#merge EEV matrices from each environment for their use in the second stage
+#It is done using the direct sum operator
+library(matrixcalc)
+placeholder_matrix <- matrix()
+for (i in 2:length(unique(pheno1a$env))) {
+  env1 <- unique(pheno1a$env)[i-1]
+  env2 <- unique(pheno1a$env)[i]
+  if (sum(is.na(placeholder_matrix)) > 0) {
+    placeholder_matrix <- direct.sum(EEVs[[env1]],EEVs[[env2]])
+  } else {
+    placeholder_matrix <- direct.sum(placeholder_matrix,EEVs[[env2]])
+  }
+}
+EEV_full <- placeholder_matrix
+dim(EEV_full)
+length(BLUEs)
+
+
+
+#Stage 2 GWAS
+#Open source
+#1) Prepare data
+Stage1Output <- data.frame(BLUEs = BLUEs,
+                       id = names(BLUEs),
+                       Env = Envs)
+
+
+#We need to add to Stage1Output a column for stage 1 estimation error 
+Stage1Error <- paste0(Stage1Output$id,":",Stage1Output$Env)
+rownames(EEV_full) <- Stage1Error
+colnames(EEV_full) <- Stage1Error
+
+#sommer input dataframe
+sommerdf <- cbind(Stage1Output,
+                  Stage1Error)
+head(sommerdf)
+
+
+#remove non-genotyped individuals
+sommerdf_smaller <- sommerdf[-which(!(sommerdf$id %in% 
+                                      rownames(as.matrix(geno[[1]]@G)))),]
+EEV_smaller <- EEV_full[sommerdf_smaller$Stage1Error,
+                          sommerdf_smaller$Stage1Error]
+stage1errorvar2 <- mean(diag(EEV_smaller)) - mean(EEV_smaller)
+
+#heterosis coefficients
+Fg <- geno[[1]]@Fg
+
+#include Fg into sommerdf:
+Fg <- Fg[match(sommerdf_smaller$id, names(Fg))]
+identical(sommerdf_smaller$id, names(Fg))
+sommerdf_smaller <- cbind(sommerdf_smaller, Fg)
+
+
+Variance_scaled <- as.matrix(1/var(sommerdf_smaller$BLUEs))
+
+
+#2) Find variance components with mmec() solver:
+Dinv <- as(solve(as.matrix(geno[[1]]@D)),Class="dgCMatrix")
+Hinv <- as(solve(as.matrix(geno[[1]]@G)),Class="dgCMatrix")
+#Scaling factors for the variance components:
+meanH <- mean(diag(geno[[1]]@G))-mean(geno[[1]]@G)
+meanD <- mean(diag(geno[[1]]@D))-mean(geno[[1]]@D)
+
+
+EEVInv <- as(solve(as.matrix(EEV_smaller)),Class="dgCMatrix")
+
+```
+
+
+```{r, eval=FALSE}
+modelGWASvar <- mmec(BLUEs ~ Env + Fg -1, #Include inbreeding coefficients in
+                   #fixed effects. We want to make a regression with them
+                     random = ~vsc(isc(id), Gu = Hinv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(id), Gu = Dinv) + #dominance genotypic
+                                #effects
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+```
+
+```{r}
+#extract variances
+Addtive_var <-  modelGWASvar$sigma[names(modelGWASvar$sigma)=="id:Hinv:isc:isc"]
+Scaled_additive <- Addtive_var/var(sommerdf_smaller$BLUEs) #sommer convention.
+#variances have to be scaled this way
+
+Dominance_var <-  modelGWASvar$sigma[names(modelGWASvar$sigma)=="id:Dinv:isc:isc"]
+Scaled_dominance <- Dominance_var/var(sommerdf_smaller$BLUEs) #sommer convention.
+#variances have to be scaled this way
+
+Residual_var <-  modelGWASvar$sigma[names(modelGWASvar$sigma) == "units:isc:isc"]
+Scaled_residual <- Residual_var/var(sommerdf_smaller$BLUEs) #sommer convention.
+#variances have to be scaled this way
+
+
+
+
+#GWAS data preparation
+#marker matrix, centered
+Mc <- as.matrix(geno[[1]]@coeff)
+
+#duplicate column for id, as we cannot use the same column for additive 
+#and dominance effects in mmer() solver
+#Each effect must be associated to its own column in the dataframe
+dom_id <- sommerdf_smaller$id
+sommerdf_smaller_GWAS <- cbind(sommerdf_smaller, dom_id)
+Variance_scaled <- as.matrix(1/var(sommerdf_smaller_GWAS$BLUEs))
+```
+
+```{r, eval=FALSE}
+#3) Perform GWAS using the variances found by mmec()
+GWASsommer_additive <- GWAS(BLUEs ~ Env + Fg -1 , #fixed effects
+                     random = ~ vsr(id, #additive effect
+                           Gu=as.matrix(geno[[1]]@G), #known additive relationship
+                           #matrix
+                           Gti=matrix(Scaled_additive), #known variance component
+                           #for additive effect (estimated by mmec())
+                           Gtc=matrix(3)) + #tell mmer() not to estimate the 
+                           #variance component and instead use the one privided 
+                           #in Gti argument
+                       #for all other random effects and the residual we fix
+                       #their variance as shown for the additive effect.
+                       vsr(dom_id, #dominance effect
+                           Gu=as.matrix(geno[[1]]@D),
+                           Gti=matrix(Scaled_dominance),
+                           Gtc=matrix(3)) +
+                       vsr(Stage1Error, #stage1error effect
+                           Gu=EEV_smaller,
+                           Gti=Variance_scaled, 
+                           Gtc=matrix(3)),
+                     rcov=~vsr(units, 
+                           Gti=matrix(Scaled_residual),
+                           Gtc=matrix(3)),
+                     data= sommerdf_smaller_GWAS,
+                     gTerm = "u:id", #focus on additive effects ("id" column
+                     #in the dataframe) for the GWAS score calculation
+                     M = Mc, #provide centered marker matrix
+                     verbose = TRUE
+)
+```
+
+```{r}
+#marker effects from GBLUP:
+MMT<-Mc%*%t(Mc) #MM'=additive relationship matrix 
+MMTinv<-solve(MMT) #inverseof MM' 
+MTMMTinv<-t(Mc)%*%MMTinv #M'%*%(M'M)
+
+a.from.g<-MTMMTinv%*%matrix(modelGWASvar$uList$`vsc(isc(id), Gu = Hinv)`,ncol=1) 
+#Proving the forumula above:
+#t(M)%*%solve(M%*%t(M))%*%BLUPs = Marker_effects
+#Multiply both sides in the left by M matrix:
+#(M%*%t(M))%*%solve(M%*%t(M))%*%BLUPs = M%*%Marker_effects
+#in the left side, (M%*%t(M)) is multiplied by its inverse, they cancel out
+#BLUPs = M%*%Marker_effects
+#in the right side, M%*%Marker_effects are the BLUPs (for each individual, we
+#are multiplying its marker coefficients by the corresponding marker effects 
+#and summing them)
+#BLUPs = BLUPs
+#The equality holds
+
+
+
+
+cor(Mc%*%a.from.g, #BLUPs from marker effects
+    modelGWASvar$uList$`vsc(isc(id), Gu = Hinv)`) #BLUPs from model
+
+
+#you can do the same for dominance effects
+#Just replace the additive relationship matrix with dominance coefficients
+Dc <- as.matrix(geno[[1]]@coeff.D)
+DDT<-Dc%*%t(Dc) #DD'=dominance relationship matrix 
+DDTinv<-solve(DDT) #inverse of DD' 
+DTDDTinv<-t(Dc)%*%DDTinv #D'%*%(D'D)
+d.from.g<-DTDDTinv%*%matrix(modelGWASvar$uList$`vsc(isc(id), Gu = Dinv)`,ncol=1) 
+cor(Dc%*%d.from.g, #BLUPs from marker effects
+    modelGWASvar$uList$`vsc(isc(id), Gu = Dinv)`) #BLUPs from model
+
+
+
+#You can use StageWise function for finding the GWAS significance threshold
+#It uses a Bonferroni-type correction based on an effective number of markers 
+#that accounts for LD. Described by:
+#Moskvina V, Schmidt KM (2008) On multiple-testing correction in genome-wide 
+#association studies. Genetic Epidemiology 32:567-573. doi:10.1002/gepi.20331
+threshold <- gwas_threshold(geno[[1]], alpha=0.05, n.core=2)
+
+#Get chromosome and position for each marker
+Mraw <- read.csv(geno.file,check.names=F)
+#remove markers eliminated by quality control by read_geno() function
+Mraw <- Mraw[which(colnames(Mc)%in%Mraw$marker),]
+GWAS_df <- data.frame(marker = Mraw[,1],
+                      chrom = Mraw[,2],
+                      position = Mraw[,3],
+                      score = c(GWASsommer_additive$scores))
+#very similar GWAS scores
+cor(GWAS_df$score, #sommer
+    gwas.ans$score) #StageWise
+
+
+#Extremely similar GWAS results with Sommer and StageWise
+#Sommer
+manhattan_plot(GWAS_df, thresh=threshold, rotate.label=TRUE)
+#StageWise
+manhattan_plot(gwas.ans, thresh=threshold, rotate.label=TRUE)
+
+#We find the same most significant SNP with sommer and StageWise
+#sommer
+bestSNP <- which.max(GWASsommer_additive$scores)
+colnames(Mc)[bestSNP]
+#StageWise
+bestSNP <- which.max(gwas.ans$score)
+colnames(Mc)[bestSNP]
+```
+
+
+The GWAS peak on chr05 is near the gene *CDF1*, which is known to have a large effect on potato maturity [(Kloosterman et al. 2013)](https://doi.org/10.1038/nature11912). The following code extracts the most significant marker for the large QTL on chr05 and passes it to `Stage2` as a fixed effect.
+
+```{r}
+k <- which.max(gwas.ans$score)
+gwas.ans[k,]
+
+ans2vm.1 <- Stage2(data=ans1vm$blues,
+               vcov=ans1vm$vcov,
+               geno=geno[[1]],
+               fix.eff.marker="solcap_snp_c2_22964",
+               non.add="g.resid")
+
+
+
+# Proportion of variance
+#summary(ans2vm.1$vars)
+
+#add column into dataframe for fixed effect marker
+fix.eff.marker <- Mc[,colnames(Mc)[bestSNP]]
+#make sure names in fix.eff.marker_coefficients match sommerdf_smaller$id
+fix.eff.marker <- fix.eff.marker[sommerdf_smaller$id]
+sommerdf_smaller <- cbind(sommerdf_smaller, fix.eff.marker)
+Variance_scaled <- as.matrix(1/var(sommerdf_smaller$BLUEs))
+
+
+```
+
+```{r,eval=FALSE}
+
+#sommer
+#without dominance
+ans2vm.1_open <- mmec(BLUEs ~ Env + fix.eff.marker -1, 
+                      #include best GWAS marker as fixed effects.
+                      #We want to make a regression with it
+                     random = ~vsc(isc(id), Gu = Hinv) + #addtitive genotypic
+                                #effects
+                     vsc(isc(id)) + #Genotypic effects not captured by the 
+                     #addtivie effect, i.i.d.
+                       vsc(isc(Stage1Error, #stage 1 estimation error effect.
+                               #as it's inside isc() function we are assuming 
+                               #identity variance-covariance structure. That is
+                               #undesired and it will be overriden later. Ideally,
+                               #we would skip isc() function altogether, but 
+                               #Sommer syntax needs it even if we will overwrite
+                               #it later.
+                               theta = Variance_scaled, #initial value for the
+                               #variance.
+                               thetaC = matrix(3)), #In thetaC we can add 
+                                #constraints for the variance estimation:
+                           
+                                #0: not to be estimated
+                                #1: estimated and constrained to be positive 
+                                #(this is the default)
+                                #2: estimated and unconstrained
+                                #(can be negative or positive)
+                                #3: not to be estimated but fixed (value has to 
+                                #be provided in the theta argument)
+                           
+                                #As we are using constraint 3, we disable
+                                #variance estimation, the model will use the
+                                #value we provided in "theta" argument
+                           Gu=EEVInv), #inverse of known variance-covariance 
+                     #matrix. This overwrites the identity variance-covariance 
+                     #structure that we had assumed when we used isc() function
+                     #for the Stage1Error effect.
+                     rcov=~vsc(isc(units)), #residuals. isc(units) means that we 
+                     #assume identity variance-covariance structure for the 
+                     #"units" effect (residuals are always called "units")
+                     data= sommerdf_smaller,
+                     verbose = TRUE
+)
+
+
+```
+
+
+```{r}
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(BLUEs~Env-1, data=sommerdf_smaller)
+Env_effects <- ans2vm.1_open$b[unique(sommerdf_smaller$Env),]
+Env_variance <- var(Xenv%*%Env_effects)
+
+
+
+# #best GWAS marker effects for all observations 
+# Xfix.eff.marker <- sommerdf_smaller$fix.eff.marker
+# fix.eff.markerEffects <- ans2vm.1_open$b["fix.eff.marker",]
+# fix.eff.marker_variance <- var(Xfix.eff.marker*fix.eff.markerEffects)
+# 
+
+
+
+
+#best GWAS marker effects for each genotype
+#extract Xfix.eff.marker from marker matrix, not from the model
+#In the model, there are repeated fix.eff.marker coefficients for genotypes 
+#that had more than one BLUE (genotypes present in more than one environment) 
+#and there are no fix.eff.marker coefficients for genotypes that were not 
+#phenotyped and had no BLUEs
+#If we take fix.eff.marker from marker matrix, there are no such problems
+Xfix.eff.marker <- Mc[,colnames(Mc)[bestSNP]]
+fix.eff.markerEffects <- ans2vm.1_open$b["fix.eff.marker",]
+fix.eff.marker_effects <- Xfix.eff.marker*fix.eff.markerEffects
+#reorder heterosis effects to be in the same order as BLUPs
+fix.eff.marker_effects <- fix.eff.marker_effects[match(rownames(ans2vm.1_open$uList$`vsc(isc(id), Gu = Hinv)`),
+                        names(fix.eff.marker_effects))]
+fix.eff.marker_variance <- var(fix.eff.marker_effects) 
+
+
+SommerBLUPs <- ans2vm.1_open$uList$`vsc(isc(id), Gu = Hinv)` +
+              fix.eff.marker_effects +
+              mean(Env_effects)
+#StageWise
+prep0 <- blup_prep(data=ans1vm$blues,
+              vcov=ans1vm$EEV,
+              geno=geno[[1]],
+              vars=ans2vm.1$vars)
+ASRemlBLUPs <- blup(prep0, geno=geno[[1]], what="BV")
+
+
+#Very similar BLUPs
+cor(ASRemlBLUPs$value, #StageWise
+    SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))]) #Sommer
+ASRemlBLUPs$value[1:5]
+SommerBLUPs[match(ASRemlBLUPs$id,rownames(SommerBLUPs))][1:5]
+
+
+
+
+
+#Put Everything together in a dataframe
+SommerVars <- c(Env_variance, #environmental variance
+                fix.eff.marker_variance,
+  ans2vm.1_open$sigma[names(ans2vm.1_open$sigma) == "id:Hinv:isc:isc"]*meanH, #additive
+  ans2vm.1_open$sigma[names(ans2vm.1_open$sigma) == "id:isc:isc"], #non-additive
+  ans2vm.1_open$sigma[names(ans2vm.1_open$sigma) == "units:isc:isc"], #residual
+  stage1errorvar2) #stage1 estimation error
+ASRemlVars <- summary(ans2vm.1$vars)$Variance
+variances_ans2vm <- data.frame(Sommer = c(SommerVars),
+                        ASReml = c(ASRemlVars))
+rownames(variances_ans2vm) <- rownames(summary(ans2vm.1$vars))
+#Extremely similar variance components for both models
+variances_ans2vm
+
+
+#almost same aic
+ans2vm.1$aic
+ans2vm.1_open$AIC
+
+# Very similar fixed effect for the marker
+ans2vm.1$params$marker #stage wise
+ans2vm.1_open$b["fix.eff.marker",] #sommer
+
+#save.image(file="workspace1.RData")
+# save(ans2_open, ans2a_open, ans2b_open, ans2c_open, ans2d_open, ans2mask, ans2vm.1_open,
+#     GWASsommer_additive, model_Sommer, modelGWASvar, file = "Vignette1Models.RData")
+```
+
+The fixed effect estimate of -0.78 for solcap_snp_c2_22964 implies that, on average, each additional copy of the alternate allele reduced vine maturity by 0.78 (on a 1-9 visual scale). According to the proportion of variance table, the marker accounted for 0.123/(0.123 + 0.235) = 34% of the breeding value.
+
+
+
+# Bibliography
+
+
+Damesa, T.M., Möhring, J., Worku, M. and Piepho, H.-P. (2017), One Step at a Time: Stage-Wise Analysis of a Series of Experiments. Agronomy Journal, 109: 845-857.
+
+Endelman, J. B. (2023). Fully efficient, two-stage analysis of multi-environment trials with directional dominance and multi-trait genomic selection. Theoretical and Applied Genetics, 136(4), 65.
+
+Piepho, H.P., J. Möhring, T. Schulz-Streeck, and J.O. Ogutu. 2012. A stage-wise approach for analysis of multi-environment trials. Biometrics 54:844–860. doi:10.1002/bimj.201100219
+
+Robinson, G. K., & Jones, L. P. (1987). Approximations for prediction error variances. Journal of Dairy Science, 70(8), 1623-1632.
+
+VanRaden, P. M. (2008). Efficient methods to compute genomic predictions. Journal of dairy science, 91(11), 4414-4423.
+
+Vitezica ZG, Varona L, Legarra A (2013). On the additive and dominant variance and covariance of individuals within the genomic selection scope. Genetics, 195(4):1223-30.

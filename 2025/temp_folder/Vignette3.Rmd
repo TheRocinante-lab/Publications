@@ -1,0 +1,1122 @@
+---
+title: "Vignette 3: Multi-trait analysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{StageWise Vignette3}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning = FALSE)
+```
+
+Libraries for open source:
+```{r}
+library(Matrix) #all StageWise models in the vignettes work for Matrix package 
+#version 1.5-1. Later versions may cause errors in some of the StageWise models
+library(lme4)
+library(matrixcalc)
+library(sommer)
+library(pracma)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(CVXR)
+#load("Vignette3Models.RData")
+```
+
+When citing this work, please ensure to also cite the StageWise package (Endelman, J. B., 2023). This citation is essential due to the foundational role of StageWise in the development of these models. For an in-depth understanding of the fully-efficient two-stage modeling strategy, we recommend Damesa et al., (2017).
+
+
+### Multi-Trait Model
+
+This section of the package focuses on estimating Best Linear Unbiased Estimates (BLUEs) in the first stage, incorporating an unstructured trait covariance matrix for the residuals. Notation Explained: In our model, the phenotypes for a single environment are expressed as $y_{ikl}$ where, where $i$ represents genotype, $k$ is trait, and $l$ represents one or more indices for treatments, covariates, etc.
+The model equation is
+$$ y_{ikl} = \mu + g_{ik} + \dots + \epsilon_{ikl} $$ 
+
+  Here, the genotype effects $g_{ik}$ are fixed and the residuals $e_{ikl}$ follow a multivariate normal distribution, with the variance given by  $var[\boldsymbol{\epsilon}] = \mathbf{I} \otimes \boldsymbol\Sigma_\epsilon$, where $\boldsymbol\Sigma_\epsilon$ is an unstructured var-cov matrix for traits.
+
+
+In the second stage, the response variable is $BLUE[g_{ijk}]$, with $j$ representing the environment. The Stage2 model, incorporating multivariate normal additive $\boldsymbol{a}$ and dominance $\boldsymbol{d}$ effects.
+
+$$BLUE[g_{ijk}] = E_{jk} + a_{ik} + d_{ik} - b_k F_i + gE_{ijk} + s_{ijk}$$
+
+where $E_{jk}$ is the fixed effect for environment, and $F_i$ is the genomic inbreeding coefficient, with regression coefficient $b_k$. The other effects are multivariate normal with zero mean and  $var[\boldsymbol{a}]=\mathbf{G} \otimes \boldsymbol\Sigma_a$, $var[\boldsymbol{d}]=\mathbf{D} \otimes \boldsymbol\Sigma_d$, and $var[\boldsymbol{gE}]=\mathbf{I} \otimes \boldsymbol\Sigma_{gE}$. The preceding $\boldsymbol\Sigma$ are unstructured var-cov matrices for traits. The Stage1 error term $\boldsymbol{s}$ is also multivariate normal, with var-cov matrix equal to the direct sum of the var-cov matrices (EEV) of the Stage1 BLUEs for each environment.
+
+### Potato dataset
+
+
+In [Vignette 1](https://jendelman.github.io/StageWise/Vignette1.html), three traits (yield, maturity, and fry color) were independently analyzed in a dataset of 943 potato clones. Due to the large number of traits in potato breeding, it is impractical to analyze them all jointly in StageWise. To simplify the analysis, it is suggested to identify groups of highly correlated traits based on the Stage 1 Best Linear Unbiased Estimators (BLUEs). This can be accomplished using a simple loop.
+
+```{r}
+library(StageWise)
+pheno.file <- system.file("vignette_data", "pheno1a.csv", package = "StageWise")
+pheno <- read.csv(pheno.file)
+effects <- data.frame(name=c("block","stand.count"),
+                      fixed=c(FALSE,TRUE),
+                      factor=c(TRUE,FALSE))
+traits <- c("total.yield","vine.maturity","fry.color")
+n.trait <- length(traits)
+
+#Single-trait model for each trait
+#These are the same Stage1 models used in Vignette1
+#You can replicate them with lmer as shown in Vignette1
+#Just use the phenotype of the desired trait as the response variable in the model
+stage1.blues <- NULL
+for (i in 1:n.trait) {
+  tmp <- Stage1(filename=pheno.file,traits=traits[i],effects=effects)
+  if (!is.null(stage1.blues)) {
+    stage1.blues <- merge(stage1.blues,tmp$blue,by=c("id","env"))
+  } else {
+    stage1.blues <- tmp$blue
+  }
+}
+colnames(stage1.blues) <- c("id","env",traits)
+head(stage1.blues)
+
+#Calculate correlation matrix for each env
+lapply(X = split(stage1.blues,stage1.blues$env),
+       FUN = function(data){round(cor(data[,2+1:n.trait]),2)})
+``` 
+
+The output indicates that, in four out of five years, the phenotypic correlation between yield and vine maturity exceeded 0.3, while the correlation between fry color and these traits consistently remained below 0.2 in magnitude. Consequently, we will initially perform a correlated trait analysis for yield and maturity, with plans to incorporate fry color results at a later stage. The syntax for analyzing multiple traits closely parallels the workflow for a single trait:
+
+```{r}
+#Multi-trait model for total.yield and vine.maturity
+ans1 <- Stage1(filename=pheno.file,traits=c("total.yield","vine.maturity"),
+              effects=effects)
+names(ans1)
+
+
+
+models <- list()
+BLUEs <- c()
+EEVs <- list()
+Envs <- c()
+n.trait <- 2 #we will consider 2 traits in the multi-trait model
+for (enviro in unique(pheno$env)) {
+  print(enviro)
+  phenoenv <- pheno[pheno$env == enviro,]
+  #1) remove entries with missing values 
+  phenoenv <- na.omit(phenoenv)
+  
+  Envs <- c(Envs, rep(enviro, length(unique(phenoenv$id))))
+  
+  phenoenv$id <- factor(phenoenv$id)
+  phenoenv$block <- factor(phenoenv$block) #cofactor
+  phenoenv$stand.count <- as.numeric(phenoenv$stand.count) #covariate
+  phenoenv$stand.count <- as.numeric(scale(phenoenv$stand.count, 
+                                           scale = FALSE, center = TRUE)) 
+  #Important to center!
+  #If you don't center the data, EEV calculation will be massively off!
+  
+  #remove the intercept in the model!
+  #It's important for correct EEV calculation
+
+  #Use mmer solver
+  #Using mmec, unstructured Trait structure for residuals failed
+  models[[enviro]] <- mmer(cbind(total.yield,vine.maturity)~ id + stand.count -1,
+                        random=~vsr(block,Gtc=diag(n.trait)),
+                        rcov=~vsr(units,Gtc=unsm(n.trait)),
+                        data=phenoenv,
+                        verbose=FALSE)
+
+
+  AllBetasNames <-   paste0(models[[enviro]]$Beta$Effect, ":",
+                                models[[enviro]]$Beta$Trait)
+  AllBetasNames <- gsub("^id", "",AllBetasNames) #remove the "id" at the beginning
+
+  #names for the betas we are not interested in (other fixed effects)
+  BadBetasNames <- paste0("stand.count", ":",
+                                unique(models[[enviro]]$Beta$Trait))
+
+  #names for the betas we are interested in (genotype:trait effect)
+  BetasToRemove <- which(AllBetasNames %in% BadBetasNames)
+  GoodBetasNames <- AllBetasNames[-BetasToRemove]
+
+  #calculate EEV (estimation error variance-covariance matrix for id effects)
+  EEV_sommer <- models[[enviro]]$VarBeta
+  #remove EEV entries for all fixed effects other than id
+  #in this case, the only fixed effect to remove is stand.count
+  EEV_sommer <- EEV_sommer[-BetasToRemove,-BetasToRemove]
+  rownames(EEV_sommer) <- GoodBetasNames
+  colnames(EEV_sommer) <- GoodBetasNames
+
+
+
+
+  #keep only the BLUEs for the id fixed effect
+  betassommer <- models[[enviro]]$Beta$Estimate[-BetasToRemove]
+  names(betassommer)  <- GoodBetasNames
+  BLUEs <- c(BLUEs, betassommer)
+
+  EEVs[[enviro]] <- EEV_sommer
+}
+
+
+  
+StageWiseBlues <- ans1$blues
+id.trait <- paste0(StageWiseBlues$id,":",StageWiseBlues$trait)
+StageWiseBlues <- cbind(StageWiseBlues, id.trait)
+StageWiseBlues <- na.omit(StageWiseBlues)
+
+#Very similar BLUEs, but not exactly the same
+  cor(StageWiseBlues$BLUE[match(names(BLUEs), StageWiseBlues$id.trait)], #StageWise
+    BLUEs)
+
+#Not exactly the same EEV
+differences <- c()
+for (enviro in unique(pheno$env)) {
+  placeholder <- ans1$vcov[[enviro]][rownames(EEVs[[enviro]]),colnames(EEVs[[enviro]])]
+  differences <- c(differences, mean(abs(EEVs[[enviro]] - placeholder)))
+}
+differences
+
+
+
+#merge EEV matrices from each environment for their use in the second stage
+#It is done using the direct sum operator
+library(matrixcalc)
+placeholder_matrix <- matrix()
+for (i in 2:length(unique(pheno$env))) {
+  env1 <- unique(pheno$env)[i-1]
+  rownames(EEVs[[env1]]) <- paste0(rownames(EEVs[[env1]]),":",env1)
+  colnames(EEVs[[env1]]) <- paste0(colnames(EEVs[[env1]]),":",env1)
+  env2 <- unique(pheno$env)[i]
+  rownames(EEVs[[env2]]) <- paste0(rownames(EEVs[[env2]]),":",env2)
+  colnames(EEVs[[env2]]) <- paste0(colnames(EEVs[[env2]]),":",env2)
+  if (sum(is.na(placeholder_matrix)) > 0) {
+    placeholder_matrix <- direct.sum(EEVs[[env1]],EEVs[[env2]])
+  } else {
+    placeholder_matrix <- direct.sum(placeholder_matrix,EEVs[[env2]])
+  }
+}
+EEV_full <- placeholder_matrix
+colnames(EEV_full) <- rownames(EEV_full)
+
+#There are more BLUEs in StageWise than in Sommer because Sommer removes all 
+#genotypes that have a missing value for some but not all traits, while StageWise
+#keeps the non-missing genotype-trait combinations
+dim(EEV_full) #Sommer
+length(BLUEs) #Sommer
+dim(na.omit(ans1$blues)) #StageWise
+
+```
+
+Similar to the single-trait analysis, `Stage1` generates a data frame of BLUEs and a list of their variance-covariance matrices. However, in place of residual diagnostic plots, the function returns residual covariance matrices under the name "resid." Below is the code for conducting Stage 2 analysis with directional dominance:
+
+```{r}
+geno.file <- system.file("vignette_data", "geno1.csv", package = "StageWise")
+geno <- read_geno(geno.file,ploidy=4,map=TRUE,dominance = TRUE)
+ans2 <- Stage2(data=ans1$blue, vcov=ans1$vcov, geno=geno, non.add="dom",
+               silent=FALSE)
+summary(ans2$vars)
+
+
+#Dataframe in long format 
+placeholder <- unlist(strsplit(names(BLUEs), ":"))
+GIDs <- placeholder[seq(1,length(placeholder), by = 2)]
+traits <- placeholder[seq(2,length(placeholder), by = 2)]
+
+
+Envs_large <- rep(Envs, each=n.trait)
+Stage1Output <- data.frame(BLUEs = BLUEs,
+                       id = GIDs,
+                       Trait = traits,
+                       Env = Envs_large)
+
+
+#to wide format
+sommerdf<-reshape(Stage1Output,idvar=c("id","Env"),
+              v.names=c("BLUEs"),direction="wide",timevar="Trait")
+
+
+#We need to add to Stage1Output a column for the id of stage 1 estimation error
+#There's a different Stage1Error column for each trait
+for (trait in unique(traits)) {
+  Stage1Error <- paste0(sommerdf$id,":",trait,":",sommerdf$Env)
+  #We need a column for BLUEs, environment name, genotypic id and stage1error
+  sommerdf <- cbind(sommerdf,
+                  Stage1Error)
+  colnames(sommerdf)[ncol(sommerdf)] <- paste0(trait,".Stage1Error")
+}
+
+
+
+genotyped_id <- unique(sommerdf$id)[unique(sommerdf$id) %in% rownames(geno@G)]
+non_genotyped_id <- setdiff(unique(sommerdf$id), genotyped_id)
+sommerdf <- sommerdf[-which(sommerdf$id %in% non_genotyped_id),]
+
+
+
+#include Fg into sommerdf:
+Fg <- geno@Fg
+#1) reorder
+Fg <- Fg[match(sommerdf$id, names(Fg))]
+identical(sommerdf$id, names(Fg))
+sommerdf <- cbind(sommerdf, Fg)
+
+
+EEV.yield <- EEV_full[sommerdf$total.yield.Stage1Error,
+                        sommerdf$total.yield.Stage1Error]
+EEV.maturity <- EEV_full[sommerdf$vine.maturity.Stage1Error,
+                           sommerdf$vine.maturity.Stage1Error]
+
+domId <- sommerdf$id
+sommerdf <- cbind(sommerdf, domId) #id with a different column name to allow to have
+#different id effects for dominance and additive
+```
+
+
+```{r, eval=FALSE}
+ans2open <- mmer(cbind(BLUEs.total.yield,BLUEs.vine.maturity) ~ Env + Fg -1, #Fixed 
+                     random = ~vsr(id, 
+                                   Gtc=unsm(n.trait), #unstructured
+                                   #variance-covariance matrix for the traits
+                                   Gu = as.matrix(geno@G)) +
+                      #id (genotypic effect) with the default
+                       vsr(domId, 
+                           Gtc=unsm(n.trait), #unstructured
+                                   #variance-covariance matrix for the traits
+                           Gu = as.matrix(geno@D)) +
+                       vsr(total.yield.Stage1Error, #Stage1Error for yield
+                           Gu=EEV.yield, #known variance-covariance structure
+                           Gti=matrix(c(1/var(sommerdf$BLUEs.total.yield),0,
+                                        0,0),nrow=2), #initial
+                                #variance value. It's divided by the variance
+                                #of the BLUEs because Sommer uses varainces
+                                #scaled that way
+                           Gtc=matrix(c(3,0,
+                                        0,0),nrow=2)) + #only estimate variance of 
+                          #this term for the first trait (yield)
+                       vsr(vine.maturity.Stage1Error, #Stage1Error for maturity
+                           Gu=EEV.maturity, #known variance-covariance structure
+                           Gti=matrix(c(0,0,
+                                        0,1/var(sommerdf$BLUEs.vine.maturity)),nrow=2), #initial
+                                #variance value. It's divided by the variance
+                                #of the BLUEs because Sommer uses varainces
+                                #scaled that way
+                           Gtc=matrix(c(0,0,
+                                        0,3),nrow=2)), #only estimate variance of 
+                           #this term for the second trait (maturity)
+                 
+                     rcov=~vsr(units,Gtc=unsm(n.trait)),
+                     data= sommerdf,
+                     verbose = TRUE
+)
+```
+
+```{r}
+#needed later to scale variances
+meanG <- mean(diag(geno@G))-mean(geno@G)
+meanD <- mean(diag(geno@D))-mean(geno@D)
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(id~Env-1, data=sommerdf)
+fixed.yield <- ans2open$Beta[which(ans2open$Beta$Trait == "BLUEs.total.yield"),] 
+Env.yield <- fixed.yield$Estimate[which(fixed.yield$Effect %in%
+                                            paste0("Env",sommerdf$Env))] 
+Env.yield.var <- var(Xenv%*%Env.yield)
+
+
+#calculate fixed effect variance in Sommer as variance of X%*%beta
+Xenv <- model.matrix(id~Env-1, data=sommerdf)
+fixed.maturity <- ans2open$Beta[which(ans2open$Beta$Trait == "BLUEs.vine.maturity"),] 
+Env.maturity <- fixed.maturity$Estimate[which(fixed.maturity$Effect %in%
+                                            paste0("Env",sommerdf$Env))] 
+Env.maturity.var <- var(Xenv%*%Env.maturity)
+
+#Heterosis effects for each genotype can be extracted directly from the 'geno'
+#data rather than relying on the model. In the model, there are duplicated 'Fg'
+#coefficients for genotypes with multiple Best Linear Unbiased Estimators (BLUEs)
+#due to their presence in multiple environments. Additionally, genotypes that
+#were not phenotyped and have no BLUEs do not have 'Fg' coefficients in the model.
+#Extracting 'Fg' from 'geno' avoids these issues.
+XFg <- geno@Fg
+Fg.yield <- fixed.yield$Estimate[which(fixed.yield$Effect == "Fg")] 
+heterosis.yield <- XFg*Fg.yield
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis.yield <- heterosis.yield[match(names(ans2open$U$`u:id`$BLUEs.total.yield),
+                        names(heterosis.yield))]
+Fg.yield.var <- var(heterosis.yield)
+
+Fg.maturity <- fixed.maturity$Estimate[which(fixed.maturity$Effect == "Fg")] 
+heterosis.maturity <- XFg*Fg.maturity
+#reorder heterosis effects to be in the same order as BLUPs
+heterosis.maturity<-heterosis.maturity[match(names(ans2open$U$`u:id`$BLUEs.vine.maturity),
+                        names(heterosis.maturity))]
+Fg.maturity.var <- var(heterosis.maturity)
+
+#Put Everything together in a dataframe
+SommerVars <- data.frame(total.yield = c(Env.yield.var,
+                          ans2open$sigma$`u:id`["BLUEs.total.yield",
+                                                "BLUEs.total.yield"]*meanG,
+                          ans2open$sigma$`u:domId`["BLUEs.total.yield",
+                                                  "BLUEs.total.yield"]*meanD,
+                          Fg.yield.var,
+                          ans2open$sigma$`u:units`["BLUEs.total.yield",
+                                                  "BLUEs.total.yield"],
+                          mean(diag(EEV.yield))- mean(EEV.yield)),
+                         
+                         vine.maturity = c(Env.maturity.var,
+                          ans2open$sigma$`u:id`["BLUEs.vine.maturity",
+                                                "BLUEs.vine.maturity"]*meanG,
+                          ans2open$sigma$`u:domId`["BLUEs.vine.maturity",
+                                                  "BLUEs.vine.maturity"]*meanD,
+                          Fg.maturity.var,
+                          ans2open$sigma$`u:units`["BLUEs.vine.maturity",
+                                                  "BLUEs.vine.maturity"],
+                          mean(diag(EEV.maturity))- mean(EEV.maturity))
+                         )
+ASRemlVars <- summary(ans2$vars)$var
+colnames(SommerVars) <- paste0("Sommer:", colnames(SommerVars))
+colnames(ASRemlVars) <- paste0("ASReml:", colnames(ASRemlVars))
+
+variances_ans2 <- cbind(SommerVars, ASRemlVars)
+
+#Very similar variances with Sommer and ASReml 
+variances_ans2
+
+#The AIC values differ significantly between the models. This disparity arises 
+#from substantial differences in likelihood values between the 'mmer()'
+#solver and the 'mmec()' solver, as well as ASReml.
+ans2$aic
+ans2open$AIC
+
+#Genotypic values (with dominance)
+SommerBLUPs.yield <- ans2open$U$`u:id`$BLUEs.total.yield +
+              ans2open$U$`u:domId`$BLUEs.total.yield + 
+              heterosis.yield +
+              mean(Env.yield)
+#Breeding values (no dominance). Don't add environment, leave them centered at 0
+SommerBVs.yield <- ans2open$U$`u:id`$BLUEs.total.yield #+
+             # mean(Env.yield)
+
+SommerBLUPs.maturity <- ans2open$U$`u:id`$BLUEs.vine.maturity +
+              ans2open$U$`u:domId`$BLUEs.vine.maturity + 
+              heterosis.maturity +
+              mean(Env.maturity)
+#Breeding values (no dominance). Don't add environment, leave them centered at 0
+SommerBVs.maturity <- ans2open$U$`u:id`$BLUEs.vine.maturity #+
+              #mean(Env.maturity)
+
+
+#StageWise
+prep1 <- blup_prep(ans1$blues, vcov=ans1$vcov, geno=geno,vars=ans2$vars)
+
+index1 <- c(total.yield=1, vine.maturity=0)
+ASRemlBLUPs.yield <- blup(prep1, geno, what="GV", index.coeff=index1)
+index2 <- c(total.yield=0, vine.maturity=1)
+ASRemlBLUPs.maturity <- blup(prep1, geno, what="GV", index.coeff=index2)
+
+#Extremely similar BLUPs
+cor(ASRemlBLUPs.yield$value, #StageWise
+SommerBLUPs.yield[match(ASRemlBLUPs.yield$id,names(SommerBLUPs.yield))]) #Sommer
+cor(ASRemlBLUPs.maturity$value, #StageWise
+SommerBLUPs.maturity[match(ASRemlBLUPs.maturity$id,names(SommerBLUPs.maturity))]) #Sommer
+
+
+#Trait correlation:
+#Sommer:
+#Trait correlation in additive effects:
+cov2cor(ans2open$sigma$`u:id`)
+#Trait correlation in dominance effects:
+cov2cor(ans2open$sigma$`u:domId`)
+#Residual trait correlation:
+cov2cor(ans2open$sigma$`u:units`)
+#ASReml:
+#trait correlation:
+summary(ans2$vars)$cor.mat
+
+
+#Example of masking for predicting one trait from another with known covariances
+sommerdf2 <- sommerdf
+sommerdf2$BLUEs.total.yield <- NA
+
+#pivot longer
+sommerdf_long<-reshape(sommerdf2,idvar=c("id","Env"),
+                       varying = c("BLUEs.total.yield",
+                                   "BLUEs.vine.maturity"),
+              v.names=c("BLUEs"),direction="long",timevar="Trait")
+sommerdf_long$Trait[which(sommerdf_long$Trait == 1)] <- "total.yield"
+sommerdf_long$Trait[which(sommerdf_long$Trait == 2)] <- "vine.maturity"
+#remove unnecessary columns
+sommerdf_long <- sommerdf_long[,-which(colnames(sommerdf_long) %in%
+                                                  c("total.yield.Stage1Error",
+                                                    "vine.maturity.Stage1Error",
+                                                    "domId"))]
+Stage1Error <- paste0(sommerdf_long$id,":",
+                         sommerdf_long$Trait,":",
+                         sommerdf_long$Env)
+sommerdf_long <- cbind(sommerdf_long, Stage1Error)
+
+rownames(sommerdf_long) <- NULL
+
+
+#reorder by trait (it makes building the EEV matrices easier)
+sommerdf_long <- sommerdf_long[order(sommerdf_long$Trait),]
+
+TraitId <- paste0("BLUEs.",sommerdf_long$Trait, ":", sommerdf_long$id)
+sommerdf_long <- cbind(sommerdf_long, TraitId)
+
+
+TxG <- kronecker(ans2open$sigma_scaled$`u:id`,geno@G, make.dimnames = T)
+TxGinv <- as(solve(as.matrix(TxG)),Class="dgCMatrix")
+
+TxD <- kronecker(ans2open$sigma_scaled$`u:id`,geno@D, make.dimnames = T)
+TxDinv <- as(solve(as.matrix(TxD)),Class="dgCMatrix")
+
+
+EEV_combined <-
+  direct.sum(ans2open$sigma_scaled$`u:total.yield.Stage1Error`[2,2]*EEV.yield, 
+             ans2open$sigma_scaled$`u:vine.maturity.Stage1Error`[2,2]*EEV.maturity)
+colnames(EEV_combined) <- rownames(EEV_combined)
+EEVinv <- as(solve(as.matrix(EEV_combined)+1e-6*diag(nrow(EEV_combined))),Class="dgCMatrix")
+
+Rmat <- ans2open$sigma_scaled$`u:units`[paste0("BLUEs.",sommerdf_long$Trait),
+                                        paste0("BLUEs.",sommerdf_long$Trait)]
+Rinv <- as(solve(as.matrix(Rmat)+1e-6*diag(nrow(Rmat))),Class="dgCMatrix")
+rownames(Rinv) <- paste0("u",1:nrow(Rinv)) #sommer naming convention for residuals
+colnames(Rinv) <- paste0("u",1:ncol(Rinv)) #sommer naming convention for residuals
+
+dim(sommerdf_long)
+dim(EEV_combined)
+dim(Rmat)
+dim(TxG)
+length(unique(sommerdf_long$TraitId))
+```
+
+
+
+```{r}
+#Fix all variances
+
+# Input known variance-covariance structures estimated from the previous model
+# We're using 'mmec' solver here because 'mmer' doesn't allow to fix the residual variance.
+ans2mask <- mmec(BLUEs ~ Env + Fg -1,
+                     random = ~vsc(isc(TraitId,
+                                   theta = matrix(1),#1 instead of Variance_scaled
+                                   #because in TxGinv we already used the scaled
+                                   #variance and covariance values
+                                  thetaC =  matrix(3)),
+                                  Gu = TxGinv) + #addtitive genotypic
+                                #effects
+                               vsc(isc(TraitId,
+                                   theta = matrix(1),#1 instead of Variance_scaled
+                                    #because in TxDinv we already used the scaled
+                                    #variance and covariance values
+                                  thetaC =  matrix(3)),
+                                  Gu = TxDinv) + #dominance genotypic
+                       vsc(isc(Stage1Error,
+                                   theta = matrix(1),#1 instead of Variance_scaled
+                                    #because in EEVinv we already used the scaled
+                                    #variance and covariance values
+                                  thetaC =  matrix(3)),
+                                  Gu = EEVinv), #Stage1Error
+                     rcov=~vsc(isc(units,
+                                   theta = matrix(1),#1 instead of Variance_scaled
+                                    #because in Rinv we already used the scaled
+                                    #variance and covariance values
+                                  thetaC =  matrix(3)),
+                                  Gu = Rinv), #residuals.
+                     data= sommerdf_long,
+                     verbose = TRUE,
+                     nIters=1 #as we already know the variances, a single
+                    #REML iteration is enough
+)
+```
+
+
+```{r}
+#Get shorter names
+names(ans2mask$uList) <- c("Additive", "Dominance", "Stage1Error")
+
+SommerBLUPs.yield<-ans2mask$uList$Additive[grep("total.yield",
+                                                rownames(ans2mask$uList$Additive))]
+names(SommerBLUPs.yield) <- rownames(ans2mask$uList$Additive)[grep("total.yield",
+                                                rownames(ans2mask$uList$Additive))]
+
+
+#StageWise
+prep2 <- blup_prep(ans1$blues, vcov=ans1$vcov,
+                   geno=geno,vars=ans2$vars, 
+                   mask=data.frame(trait="total.yield"))
+
+
+#Retrieve BLUPs for total.yield trait only:
+index1 <- c(total.yield=1, vine.maturity=0)
+ASRemlBLUPs.yield1 <- blup(prep2, geno, what="AV", index.coeff=index1)
+
+
+#BLUPs
+#High correlation
+cor(ASRemlBLUPs.yield1$value, #StageWise, masked
+SommerBLUPs.yield[match(paste0("BLUEs.total.yield:",ASRemlBLUPs.yield1$id)
+                        ,names(SommerBLUPs.yield))]) #Sommer, masked
+
+cor(ASRemlBLUPs.yield$value, #StageWise, not masked
+SommerBLUPs.yield[match(paste0("BLUEs.total.yield:",ASRemlBLUPs.yield$id)
+                        ,names(SommerBLUPs.yield))]) #sommer, masked
+
+cor(ASRemlBLUPs.yield$value, #StageWise, not masked
+    ASRemlBLUPs.yield1$value) #StageWise, masked
+```
+
+
+### Index Selection
+
+One problem in multi-trait modelling is selecting the best genotypes based on the Genomic Estimated Breeding Values (GEBVs) for the multiple traits. Index selection is a powerful approach to solve this issue. In index selection, the GEBVs for the different traits are merged into a single value (index score) by performing a weighted sum of them. To compute the weights, the breeder has to determine the relative importance of the traits. It is also possible to set constraints to these traits, such as forcing them to be below or above a threshold. Taking all of this into account, it is possible to calculate the best weights or coefficients for the index selection using convex optimization (more on that later). StageWise does can do this automatically with the `gain` function, but we will also show how to do it step by step. In summary, the objectives of index selection are twofold:
+
+**1) Determination of the Response**: The genotype with the best combination of traits can is called the Response. The first step in multi-trait index selection is determining the Response according to the economical importance of the different traits, practical constraints, etc. 
+
+**2) Calculation of Index Scores**: The goal is to compute an evaluation metric (index score) for each genotype by creating a weighted sum of the available GEBVs of the different traits. To achieve this, we need to determine the weights or coefficients (referred to as indexes) that best align with the previously defined optimal Response, i.e. we want to find a set of coefficients that allow us to compute index scores that present the highest values for genotypes with a performance near the Response.
+
+
+
+
+
+Going back to our example, if the objective of breeding is maximizing yield, we could simply maximize it while disregarding maturity. This could be done with an index selection in which yield has a weight of 1 and maturity has a weight of zero (i.e., it does not influence the index score):
+
+```{r}
+index1 <- c(total.yield=1, vine.maturity=0)
+GEBV1 <- blup(prep1, geno, what="BV", index.coeff=index1)
+```
+
+However, because yield and late maturity are correlated, the above index will lead to later maturity, which is undesirable. The `gain` command can be used to compute the expected response for different indices, in units of intensity x standard deviation ($i\sigma$). Its input is the output from `blup_prep`:
+
+```{r,fig.width=3,fig.height=3}
+gain1 <- gain(input=prep1, traits=c("total.yield","vine.maturity"), 
+              coeff=index1)
+#values of yield and maturyti expected for the best genotype according to the
+#selection index we have defined (i.e., just maximize yield and disregard maturity)
+gain1$table #high maturity, undesired
+gain1$plot #yield and maturity are correlated!
+
+#Sommer. Similar shape to gain plot
+plot(x = SommerBVs.yield,
+     y = SommerBVs.maturity,
+     xlab = "total.yield",
+     ylab = "vine.maturity")
+bestID <- which.max(SommerBVs.yield)
+#High yield implies late maturity:
+SommerBVs.yield[bestID]/sd(SommerBVs.yield) #divide by sd to normalize
+SommerBVs.maturity[bestID]/sd(SommerBVs.maturity) #divide by sd to normalize
+```
+
+The plot above illustrates the ellipse of possible responses for the two traits (in units of $i\sigma$). The dashed red line signifies the direction of the index vector, where we specified zero weight for maturity. The blue line segment represents the response that maximizes genetic merit, which, in this instance, corresponds to the point on the ellipse with the highest yield value. However, both the table and figure reveal that this choice results in an increase in maturity by 0.41$i\sigma$.
+
+To select for higher yield without increasing maturity, a *restricted* index is required. Intuitively, this involves assigning a negative weight to maturity in the index. The optimal index coefficient can be determined using `gain`, which requires a table of constraints with two columns: "trait" and "sign". For each trait, the "sign" column can have one of three symbols: "=", "<", or ">", indicating whether the response should be $= 0$, $\leq 0$, or $\geq 0$, respectively. In this case, we aim for the maturity response to be less than or equal to zero. 
+
+While the `gain` function is very convenient, we believe it is important to replicate it to showcase how it works and provide some understanding of what is happening in the background. To that end, we will discuss two approaches for maximizing yield while enforcing a constraint on negative maturity:
+
+**1) Simplistic Approach**
+  1) Enforce constraints: Retain only BLUPs with negative maturity.
+  2) Among non-late maturity genotypes, identify the one with the highest yield, and the BLUPs for that genotype form the response vector     ($\boldsymbol{r}$).
+  3) Compute coefficients ($\boldsymbol{c}$) for calculating index scores: $\boldsymbol{c_0} = \Sigma_a^{-1}\boldsymbol{r}$; $\boldsymbol{c} =     \frac{\boldsymbol{c_0}}{\sqrt{sum(\boldsymbol{c_0}^2)}}$, where $\Sigma_a$ represents the trait variance-covariance for additive effects.
+  4) Index Scores can be obtained as the weighted sum of BLUPs for each trait using coefficients $\boldsymbol{c}$ as weights.
+
+
+**2) Convex Optimization Approach**
+While the above approach is straightforward, it relies on existing BLUPs, which are limited in resolution as they represent a sample from the model-estimated distribution $\boldsymbol{a} \sim N(0, \mathbf{G} \otimes \boldsymbol\Sigma_a)$. Furthermore, due to shrinkage, they have a lower variance than the true breeding values, which can be problematic when defining the exact value of thresholds such as the maximum desired value for maturity. There is an alternative approach that is based on the distribution of the true breeding values and exploring the relationship across traits, i.e., $N(0, \boldsymbol\Sigma_a)$. To achieve this, we employ **convex optimization**, which is what the `gain` function uses in the background. Convex optimization is very well suited to this problem because it can very efficiently find the optimal index scores given an objective (maximize yield) and one or more constraints (negative maturity). 
+
+To fully understand the convex optimization performed here, we need to explain the **quadratic form**. First, we need to define a vector of unknown variables $\boldsymbol{x}$, which will be the Response. In other words, $\boldsymbol{x} = (x_{yield}, x_{maturity})$ are the expected values for both traits in the best genotype. The inverse of the variance-covariance matrix for trait BLUPs, $\Sigma_a^{-1}$, plays a pivotal role in the quadratic form, yielding $\text{quad_form}(\boldsymbol{x},\Sigma_a^{-1}) = \boldsymbol{x}^\top \Sigma_a^{-1}\boldsymbol{x}$. This form generates a polynomial with all elements of order 2. Plotting the equation $t(\boldsymbol{x})\Sigma_a^{-1}\boldsymbol{x} = \text{cutoff}$ results in an ellipse, representing a cross-section of the multivariate normal distribution $N(0, \boldsymbol\Sigma_a)$ followed by the breeding values. If you are interested in knowing where this equation comes from, $t(\boldsymbol{x})\Sigma_a^{-1}\boldsymbol{x} = \text{cutoff}$ is the probability density function of the elliptical distribution associated to  $N(0, \boldsymbol\Sigma_a)$ (for more details, see section 1.2.1 of Frahm, G. (2004)). Different values of "cutoff" determine the size of the plotted ellipse, with larger values yielding larger ellipses.
+
+A common desired cutoff value is the one that ensures that the ellipse encompasses 95% of the probability density, which can be determined using the `qchisq()` function. It is important to note that the cutoff value won't affect optimization results, but it will impact ellipse visualization. In other words, it will alter the absolute value of the Response but not their relative values.
+
+By employing the quadratic form, we can conduct convex optimization within the ellipse, i.e. we are informing the optimization process of the existing correlation between traits. This is essential for restricting the search to reasonable values for yield and maturity. The convex optimization problem can be defined with several constraints (in this case negative maturity values and all values must be within the ellipse defined by the quadratic form and cutoff) and an objective (maximizing yield). Solving this problem using the "CVXR" package allows us to identify the optimal response. Subsequently, the coefficients for index selection can be easily obtained as $\boldsymbol{c} = \Sigma_a^{-1}\boldsymbol{x}$. To understand why, we first need to keep in mind that the desired vector of coefficients $\boldsymbol{c}$ is the one that, when applied to the genotypic values (samples from $N(0, \boldsymbol\Sigma_a)$), results in a selection index with high values near the response $\boldsymbol{x}$. Next, the equation is much intuitive if we move the covariance matrix to its left side: $\Sigma_a\boldsymbol{c} = \boldsymbol{x}$. The covariance matrix $\Sigma_a$ has a direction in which it has maximum variance (eigenvector of the first principal component). Similarly, the vector $c$ is pointing to another direction. Geometrically, multiplying $\Sigma_a\boldsymbol{c}$ results in a new vector with a direction in between $c$ and the direction of maximum variance in $\Sigma_a$. Thus, it can be said that when we apply $\Sigma_a$  to $\boldsymbol{c}$, we are turning the latter towards the maximum variance of the former. Conversely, it can be said that applying $\boldsymbol{c}$ to $\Sigma_a$ turns the direction of maximum variance of $\Sigma_a$ towards $c$. Knowing this, we need to find a vector of coefficients $c$ such that, when applied to $\Sigma_a$, it turns its direction of maximum variance to point towards the response vector $\boldsymbol{x}$. This would result in a selection index that has its maximum variance in the direction of the response, i.e. it has larger values for genotypes close to the optimal one (the response). This is exactly what we need. The easy way to find this desired vector of coefficients is solving the equation: $\Sigma_a\boldsymbol{c} = \boldsymbol{x}; \boldsymbol{c} = \Sigma_a^{-1}\boldsymbol{x}$, which is the equation we described initially.
+
+
+
+```{r,fig.width=3,fig.height=3}
+#StageWise
+#Gain function uses convex optimization
+gain2 <- gain(input=prep1, traits=c("total.yield","vine.maturity"),
+              coeff=index1, #user-defined relative importance of the traits
+              restricted=data.frame(trait="vine.maturity", sign="<")) #constraits
+gain2$table
+gain2$plot
+
+index2 <- gain2$table$index #coefficients
+names(index2) <- gain2$table$trait
+GEBV2 <- blup(prep1, geno, what="BV", index.coeff=index2) #Evaluation metric
+#that summarizes both traits. (Index Scores)
+
+
+#Sommer. 
+#Similar shape to StageWise ellipse
+plot(x = SommerBVs.yield, 
+     y = SommerBVs.maturity,
+     xlab = "total.yield",
+     ylab = "vine.maturity")
+
+
+#Find response and coefficients from Sommer results
+#(Replicate the gain() function from StageWise):
+
+#1) Simplistic approach (not recommended but useful for understanding the process): 
+#1.1) Enforce constraints: leave only negative values for maturity
+restrictedIDs <- which(SommerBVs.maturity < 0)
+bestID <- names(which.max(SommerBVs.yield[restrictedIDs]))
+bestIDindex <- which(names(SommerBVs.yield) == bestID)
+#1.2) Highest yield without late maturity:
+SommerBVs.yield[bestIDindex]
+SommerBVs.maturity[bestIDindex]
+
+#1.3) Get the coefficients that allow us to identify the best BLUPs that respect our
+#constraints
+response <- c(SommerBVs.yield[bestIDindex],SommerBVs.maturity[bestIDindex])
+response #best yield and maturity values
+BLUPsvcovInv <- solve(ans2open$sigma$`u:id`) #inverse of the variance-covariance
+#across traits
+
+c.opt <- as.numeric(BLUPsvcovInv %*% response) #get coefficients
+c.opt <- c.opt/sqrt(sum(c.opt^2)) #normalize coefficients
+#these coefficients allow to merge the breeding values of the two traits
+#into a single value reflecting the desired trait relative importance and constraints
+c.opt
+WeightedBV <- c.opt[1]*SommerBVs.yield + c.opt[2]*SommerBVs.maturity 
+WeightedBV[1:5]
+```
+
+The previous approach is straightforward but somewhat simplistic. To calculate both the response and the coefficients (c.opt), we relied on existing BLUPs. However, it's important to note that BLUPs are merely a sample from the distribution estimated by the model. This sampling process limits the "resolution" of our approach. Essentially, we are using as many data points as there are genotypes to estimate the coefficients. Furthermore, the BLUPs are shrunk, which can cause problems as it can cause the thresholds defined by the breeders meaningless.
+
+Alternative, we can use convex optimization, which, as described before, is a much more robust methodology:
+
+
+```{r,fig.width=3,fig.height=3}
+#2) convex optimization
+#library(CVXR)
+# We will utilize the 'CVXR' library for convex optimization.
+alpha <- 0.05
+c2 <- qchisq(p = (1-alpha), df=n.trait, lower.tail = TRUE) #cutoff resulting 
+#in an ellipse containing 1-alpha of the probability density
+
+#Get the inverse of the variance-covariance matrix of the traits:
+BLUPsvcovInv <- solve(ans2open$sigma$`u:id`) 
+    
+#x: vector with the two variables (the two traits)
+#Variable 1 = total.yield
+#Variable 2 = vine.maturity
+#The order of the traits is the same we used for the model
+#Convex optimization will find the optimal values of x, i.e. the Response
+x <- Variable(n.trait)
+
+#First constraint: we will only scan inside the ellipse 
+#"quad_form(x,BLUPsvcovInv) = cutoff"
+#i.e., during optimization we will only consider realistic values for the BLUPs
+#of both traits, considering their correlation.
+constraints <- list(quad_form(x,BLUPsvcovInv) <= c2)
+
+#Add constraint: vine.maturity smaller than 0
+#"A" matrix means: 
+#Trait 1 (total.yield) --> unconstrained --> Set its value to 0
+#Trait 2 (vine.maturity) --> constrained --> Set its value to 1
+A <- matrix(c(0,1), nrow = 1)
+#The constrained variables (only vine.maturity) must be smaller than 0
+constraints <- c(constraints,list(A%*%x<=0))
+
+#objective of the optimization: maximize a linear combination of traits
+#in this case, we want to maximize yield only
+v <- matrix(c(1,0), nrow=1) #1 = weight for yield, 0 = weight for maturity
+objective <- Maximize(v%*%x)
+
+#Define optimization problem
+problem <- Problem(objective,constraints)
+
+#Perform optimization
+result <- CVXR::solve(problem,solver="ECOS")
+
+x.opt <- as.numeric(result$getValue(x)) #response
+c.opt <- as.numeric(BLUPsvcovInv %*% x.opt)
+c.opt <- c.opt/sqrt(sum(c.opt^2)) #coefficients
+names(x.opt) <- c("total.yield", "vine.maturity")
+
+#Index Scores combining both traits and reflecting desired constraints:
+WeightedBV <- c.opt[1]*SommerBVs.yield + c.opt[2]*SommerBVs.maturity 
+
+
+#For plotting, we need to extract the general equation of the ellipse from the
+#quadratic form:
+
+#Ellipse general equation:
+#Ax^2 + Bxy + Cy^2 + Dx + Ey + FF = 0
+
+#A, B and C can be extracted from the quadratic form: 
+#matrix(c(x,y),nrow=1)%*%BLUPsvcovInv%*%t(matrix(c(x,y),nrow=1))
+
+A = BLUPsvcovInv[1,1]
+B = BLUPsvcovInv[1,2] + BLUPsvcovInv[2,1]
+C = BLUPsvcovInv[2,2]
+D = 0 #centered at mean = 0 for total.yield
+E = 0 #centered at mean = 0 for vine.maturity
+FF = -c2 #minus cutoff (we want it to be positive if we move it to the other
+#side of the equation)
+
+
+#Transform the general equation to the canonical form for plotting:
+a = -sqrt(2*(A*E^2+C*D^2-B*D*E+(B^2-4*A*C)*FF)*((A+C) - sqrt((A-C)^2+B^2)))/(B^2-4*A*C)
+b = -sqrt(2*(A*E^2+C*D^2-B*D*E+(B^2-4*A*C)*FF)*((A+C) + sqrt((A-C)^2+B^2)))/(B^2-4*A*C)
+theta <- pi/2-atan((C-A-sqrt((A-C)^2+B^2))/B)
+
+#Dataframe for plotting: contains the BLUPs for both traits
+plotdf <- data.frame(total.yield=SommerBVs.yield,
+                             vine.maturity=SommerBVs.maturity,
+                             Index_scores = WeightedBV, #Index Scores
+                             best10 = F)
+
+#Highlight the 10 best genotypes according to the Index Scores summarizing
+#both traits, which in turn depends on the coefficients calculated during optimization.
+best10 <- order(plotdf$Index_scores, decreasing = TRUE)[1:10]
+plotdf$best10[best10] <- T 
+
+
+#Plot Sommer GEBVs
+ggplot()  + 
+geom_point(data = plotdf,
+           aes(x=total.yield, y=vine.maturity, color = Index_scores)) + 
+  geom_point(data = plotdf[best10,],
+           aes(x=total.yield, y=vine.maturity), color = "red") + 
+  geom_ellipse(aes(x0=0,y0=0, a=a, b=b, angle = -theta)) +
+  ggtitle("Sommer")
+
+
+
+
+#Repeat the same plot using the StageWise GEBVs and the coefficients obtained
+#using gain() function from StageWise
+GEBV2ordered <- GEBV2[match(rownames(plotdf), GEBV2$id),]
+plotdf$Index_scores <- GEBV2ordered$value #Index Scores
+
+best10ASReml <- order(plotdf$Index_scores, decreasing = TRUE)[1:10]
+
+#Plot StageWise BLUPs
+ggplot()  + 
+geom_point(data = plotdf,
+           aes(x=total.yield, y=vine.maturity, color = Index_scores)) + 
+  geom_point(data = plotdf[best10ASReml,],
+           aes(x=total.yield, y=vine.maturity), color = "red") + 
+  geom_ellipse(aes(x0=0,y0=0, a=a, b=b, angle = -theta))  +
+  ggtitle("StageWise")
+```
+
+The table output shows the index coefficients to achieve zero response for maturity while maximizing yield, while the ellipse allows to visualize it.
+
+We can use this information to calculate breeding values for the selection index:
+
+```{r}
+#The Index Scores summarizing both traits are very similar for StageWise and Sommer:
+cor(GEBV2$value, #StageWise
+WeightedBV[match(GEBV2$id,names(WeightedBV))]) #Sommer
+
+```
+
+The following code helps visualize how the ranking of genotypes is different with the restricted index compared to maximizing yield alone.
+
+```{r}
+# Rank genotypes from high to low 
+GEBV1$y <- rank(-GEBV1$value)
+GEBV2$y <- rank(-GEBV2$value)
+
+seg1 <- merge(GEBV1[,c("id","y")],GEBV2[,c("id","y")],by="id")
+colnames(seg1) <- c("id","y","yend")
+plot.data <- data.frame(seg1[seg1$y <= 10 | seg1$yend <= 10,],x=0,xend=1)
+
+
+ggplot(plot.data,aes(x=x,y=y,xend=xend,yend=yend)) + geom_segment() + theme_bw() + 
+  scale_y_reverse(lim=c(20,0),breaks=c(1,5,10,15,20),labels=c(1,5,10,15,20),minor_breaks = NULL,name="Rank",
+                  sec.axis = sec_axis(trans=~.*1,breaks=c(1,5,10,15,20),labels=c(1,5,10,15,20))) +
+  scale_x_continuous(breaks=c(0,1),labels=c("unrestricted","restricted"),name="") +
+  theme(axis.text=element_text(size=13),axis.title=element_text(size=13))
+
+```
+
+Now that we have GEBV for yield and maturity, we can incorporate fry color into the index with equal weight as yield. This is achieved by supplying a list of class "prep" objects (generated from `blup_prep`) to the `blup` command. The first object corresponds to yield and maturity, and the second object corresponds to fry color. It's essential to use the same genetic model (including dominance) for all traits when combining them in the index.
+
+
+```{r}
+fry1 <- Stage1(filename=pheno.file,traits="fry.color",
+              effects=effects)
+fry2 <- Stage2(data=fry1$blues, vcov=fry1$vcov, geno=geno, non.add="dom")
+fry.prep <- blup_prep(fry1$blues, fry1$vcov, geno, fry2$vars)
+
+index3 <- c(index2, fry.color=as.numeric(index2["total.yield"]))
+index3
+GEBV3 <- blup(data=list(prep1,fry.color=fry.prep), geno=geno, what="BV",
+              index.coeff=index3)
+              
+```
+
+
+### Genomic prediction with secondary traits
+
+The "mask" argument in `blup_prep` facilitates the exploration of the potential benefits of using a correlated secondary trait to enhance genomic selection. For instance, many plant breeding programs are currently investigating the integration of spectral measurements obtained from high-throughput phenotyping platforms to enhance yield selection. In this context, we can refer to the example based on data from Rutkoski et al. (2016), who demonstrated that canopy temperature (CT) during grain fill could predict yield in wheat.
+
+Both the G matrix and Stage 1 Best Linear Unbiased Estimates (BLUEs) from drought and extreme drought environments are distributed with the package. Similar to the potato dataset discussed in Vignette 1, including the Stage 1 errors in Stage 2 substantially reduces the Akaike Information Criterion (AIC).
+
+
+```{r}
+data(wheat, package = c("StageWise")) #load the wheat data
+head(wheat.blues)
+wheat.EEV <- wheat.vcov #StageWise calls EEV "vcov"
+
+ans2a <- Stage2(data=wheat.blues, vcov=wheat.EEV, geno=wheat.geno,
+                non.add="none")
+ans2b <- Stage2(data=wheat.blues, geno=wheat.geno, non.add="none")
+
+data.frame(vcov=c(TRUE,FALSE), AIC=c(ans2a$aic,ans2b$aic))
+
+```
+
+Because the wheat lines are inbred, the genetic residual option in StageWise would be appropriate for modeling non-additive values, but this led to convergence problems with ASReml-R. Thus, non-additive effects were omitted using the argument non.add="none". Genomic heritability was 0.45-0.50 for yield and canopy temperature, with an additive genetic correlation of -0.81. 
+
+```{r}
+summary(ans2a$vars)
+```
+
+Moving on to genomic predictions, our initial step involves conducting a tenfold cross-validation without the use of CT data for the selection candidates. This approach can be referred to as marker-based selection (MBS,), as outlined in Vignette 1. Given that our primary objective is yield prediction, the index coefficients are set to 1 for GY and 0 for CT.
+
+```{r}
+id <- unique(wheat.blues$id)
+N <- length(id)
+folds <- split(sample(id),cut(1:N,10))
+MBS <- NULL
+for (i in 1:10) {
+  prep <- blup_prep(wheat.blues, wheat.EEV, wheat.geno, ans2a$vars, 
+                    mask=data.frame(id=folds[[i]]))
+  pred <- blup(prep, geno=wheat.geno, what="BV", 
+               index.coeff=c(GY=1, CT=0))
+  MBS <- rbind(MBS, pred[pred$id %in% folds[[i]],])
+}
+```
+
+In the code provided above, the "mask" argument for `blup_prep` contains only the variable "id." This setup implies that all Stage 1 BLUEs for those individuals are masked. To specifically mask grain yield and utilize CT as a secondary trait for marker-assisted selection (MAS), we introduce a second variable named "trait."
+
+```{r}
+MAS <- NULL
+for (i in 1:10) {
+  prep <- blup_prep(wheat.blues, wheat.EEV, wheat.geno, ans2a$vars, 
+                    mask=data.frame(id=folds[[i]], trait="GY"))
+  pred <- blup(prep, geno=wheat.geno, what="BV", 
+               index.coeff=c(GY=1, CT=0))
+  MAS <- rbind(MAS, pred[pred$id %in% folds[[i]],])
+}
+
+ans <- merge(MBS,MAS,by="id")
+
+#This figure shows that using CT increased the reliability of genomic prediction by 0.2 on average.
+ggplot(ans,aes(x=r2.x, y=r2.y)) + 
+  geom_hex() + 
+  coord_fixed(ratio=1) + 
+  geom_line(data=data.frame(x=c(0.2,0.8),y=c(0.2,0.8)),mapping=aes(x=x,y=y),linetype=2) +  
+  ggtitle("Reliability") +
+  xlab("MBS") + ylab("MAS")
+```
+
+
+The figure above illustrates that the inclusion of CT data led to a notable improvement in the reliability of genomic prediction, with an average increase of 0.2.
+
+
+```{r}
+#Sommer
+#remove ungenotyped entries
+wheat.blues.backup <- wheat.blues
+wheat.EEV.backup <- wheat.EEV
+genotyped <- (wheat.blues$id %in% rownames(wheat.geno@G))
+wheat.blues <- wheat.blues[genotyped,]
+
+
+#to wide format (needed for mmer solver)
+wheat.wide<-reshape(wheat.blues,idvar=c("id","env"),
+              v.names=c("BLUE"),direction="wide",timevar="trait")
+wheat.wide <- wheat.wide[order(wheat.wide$env),]
+unique(wheat.wide$env)
+n.trait <- length(unique(wheat.blues$trait))
+
+
+Stage1Error.GY <- paste0(wheat.wide$id, ":", "GY:", wheat.wide$env)
+wheat.wide<-cbind(wheat.wide, Stage1Error.GY)
+
+Stage1Error.CT <- paste0(wheat.wide$id, ":", "CT:", wheat.wide$env)
+wheat.wide<-cbind(wheat.wide, Stage1Error.CT)
+
+
+rownames(wheat.EEV$drought) <- paste0(rownames(wheat.EEV$drought),":drought")
+colnames(wheat.EEV$drought) <- paste0(colnames(wheat.EEV$drought),":drought")
+
+rownames(wheat.EEV$`severe drought`) <- 
+  paste0(rownames(wheat.EEV$`severe drought`),":severe drought")
+colnames(wheat.EEV$`severe drought`) <- 
+  paste0(colnames(wheat.EEV$`severe drought`),":severe drought")
+
+
+
+#Prepare EEV matrices for both traits:
+EEV.GY <- direct.sum(as.matrix(wheat.EEV$drought),
+                     as.matrix(wheat.EEV$`severe drought`))
+colnames(EEV.GY) <- rownames(EEV.GY)
+EEV.GY <- EEV.GY[wheat.wide$Stage1Error.GY,wheat.wide$Stage1Error.GY]
+
+
+EEV.CT <- direct.sum(as.matrix(wheat.EEV$drought),
+                     as.matrix(wheat.EEV$`severe drought`))
+colnames(EEV.CT) <-  rownames(EEV.CT)
+EEV.CT <- EEV.CT[wheat.wide$Stage1Error.CT,wheat.wide$Stage1Error.CT]
+
+EEV.overlay <- direct.sum(EEV.GY,EEV.CT)
+colnames(EEV.overlay) <-  rownames(EEV.overlay)
+
+geno <- as.matrix(wheat.geno@G)
+```
+
+
+
+```{r, eval=FALSE}
+#1) estimate variances
+ansWheat <- mmer(cbind(BLUE.GY,BLUE.CT) ~ env -1, #Fixed 
+                     random = ~vsr(id, 
+                                   Gtc=unsm(n.trait), 
+                                   Gu = geno) +
+                       vsr(Stage1Error.GY,
+                           Gu=EEV.GY, #known variance-covariance structure
+                           Gti=matrix(c(1/var(wheat.wide$BLUE.GY),0,
+                                        0,0),nrow=2), #initial
+                                #variance value. It's divided by the variance
+                                #of the BLUEs because Sommer uses varainces
+                                #scaled that way
+                           Gtc=matrix(c(3,0,
+                                        0,0),nrow=2)) +
+                       vsr(Stage1Error.CT,
+                           Gu=EEV.CT, #known variance-covariance structure
+                           Gti=matrix(c(0,0,
+                                        0,1/var(wheat.wide$BLUE.CT)),nrow=2), #initial
+                                #variance value. It's divided by the variance
+                                #of the BLUEs because Sommer uses varainces
+                                #scaled that way
+                           Gtc=matrix(c(0,0,
+                                        0,3),nrow=2)),
+                     rcov=~vsr(units,Gtc=diag(n.trait)),#this should be unstructured
+                 #but I'm making it diagonal due to singularity problems
+                     data= wheat.wide,
+                     verbose = TRUE,
+                     tolParInv = 1e-1 #raise tolerance to help with singularity problems
+)
+```
+
+
+
+```{r}
+#go back to long format (needed for mmec solver):
+#BLUEs=NA for all GY entries:
+wheat.blues$BLUE[which(wheat.blues$trait=="GY")] <- NA
+
+
+Stage1Error <- paste0(wheat.blues$id,":",
+                         wheat.blues$trait,":",
+                         wheat.blues$env)
+wheat.blues <- cbind(wheat.blues,Stage1Error)
+
+EEV_full <- direct.sum(EEV.GY,EEV.CT)
+colnames(EEV_full) <- rownames(EEV_full)
+
+
+
+TraitId <- paste0("BLUE.",wheat.blues$trait, ":", wheat.blues$id)
+wheat.blues <- cbind(wheat.blues, TraitId)
+
+TxG <- kronecker(ansWheat$sigma_scaled$`u:id`,geno, make.dimnames = T)
+TxGinv <- as(solve(as.matrix(TxG)),Class="dgCMatrix")
+
+EEV_combined <- direct.sum(EEV.GY,EEV.CT)
+colnames(EEV_combined) <- rownames(EEV_combined)
+EEVInv <- as(solve(as.matrix(EEV_combined)),Class="dgCMatrix")
+
+Rmat <- ansWheat$sigma_scaled$`u:units`[paste0("BLUE.",wheat.blues$trait),
+                                        paste0("BLUE.",wheat.blues$trait)]
+Rinv <- as(solve(as.matrix(Rmat)+1e-4*diag(nrow(Rmat))),Class="dgCMatrix")
+rownames(Rinv) <- paste0("u",1:nrow(Rinv)) #sommer naming convention for residuals
+colnames(Rinv) <- paste0("u",1:ncol(Rinv)) #sommer naming convention for residuals
+
+
+dim(wheat.blues)
+dim(EEV_combined)
+dim(Rmat)
+dim(TxG)
+length(unique(wheat.blues$TraitId))
+```
+
+```{r}
+#2) Fix all variances and calculate BLUPs
+#Input known variance-covariance structures estimated from the previous model
+#use mmec solver here. We need mmec because
+#mmer doesn't allow us to fix the residual variance
+ans2Wheat <- mmec(BLUE ~ env -1,
+                     random = ~vsc(isc(TraitId,
+                                   theta = matrix(1),
+                                  thetaC =  matrix(3)),
+                                  Gu = TxGinv) + #addtitive genotypic
+                       vsc(isc(Stage1Error,
+                                   theta = matrix(1),
+                                  thetaC =  matrix(3)),
+                                  Gu = EEVInv),
+                     rcov=~vsc(isc(units,
+                                   theta = matrix(1),
+                                  thetaC =  matrix(3)),
+                               Gu = Rinv), #residuals. isc(units) means that we
+                     #assume identity variance-covariance structure for the
+                     #"units" effect (residuals are always called "units")
+                     data= wheat.blues,
+                     verbose = TRUE,
+                     nIters=1 #as we already know the variances, a single
+                    #REML iteration is enough
+)
+```
+
+```{r}
+#Get shorter names
+names(ans2Wheat$uList) <- c("Additive", "Stage1Error")
+
+
+
+SommerBLUPs.yield<-ans2Wheat$uList$Additive[grep("GY",
+                                                rownames(ans2Wheat$uList$Additive))]
+names(SommerBLUPs.yield) <- rownames(ans2Wheat$uList$Additive)[grep("GY",
+                                                rownames(ans2Wheat$uList$Additive))]
+
+
+# #StageWise
+# #Non-masked
+# prep1 <- blup_prep(wheat.blues.backup, wheat.EEV.backup, wheat.geno, ans2a$vars)
+
+#Mask GY
+prep2 <- blup_prep(wheat.blues.backup, wheat.EEV.backup, wheat.geno, ans2a$vars, 
+                    mask=data.frame(trait="GY"))
+
+
+index2 <- c(GY=1, CT=0)
+#ASRemlBLUPs.GY_non_masked <- blup(prep1, wheat.geno, what="BV", index.coeff=index2)
+ASRemlBLUPs.GY <- blup(prep2, wheat.geno, what="BV", index.coeff=index2)
+
+
+#BLUPs
+#High correlation
+cor(ASRemlBLUPs.GY$value, #StageWise, masked
+SommerBLUPs.yield[match(paste0("BLUE.GY:",ASRemlBLUPs.GY$id)
+                        ,names(SommerBLUPs.yield))]) #Sommer, masked
+ 
+
+# save.image("workspace3.RData")
+#save(ans2open, ans2mask, ansWheat, ans2Wheat, file = "Vignette3Models.RData")
+```
+
+The results of Sommer and StageWise, while not exactly equivalet, are very similar and present very high correlation between them.
+
+
+
+# Bibliography
+
+Damesa, T.M., Möhring, J., Worku, M. and Piepho, H.-P. (2017), One Step at a Time: Stage-Wise Analysis of a Series of Experiments. Agronomy Journal, 109: 845-857.
+
+Endelman, J. B. (2023). Fully efficient, two-stage analysis of multi-environment trials with directional dominance and multi-trait genomic selection. Theoretical and Applied Genetics, 136(4), 65.
+
+Frahm, G. (2004). Generalized elliptical distributions: theory and applications (Doctoral dissertation, Universität zu Köln).
