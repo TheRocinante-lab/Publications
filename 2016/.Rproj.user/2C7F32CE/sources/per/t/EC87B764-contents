@@ -1,0 +1,231 @@
+setwd("~/Dropbox/SelectionofTrainingPopulations/DATA ARTICLE/WheatDataSets/download_CKHQ")
+rm(list=ls())
+gc()
+load("wheatdataready.RData")
+ls()
+library(STPGA)
+library(EMMREML)
+
+dim(amatout$imputed)
+
+#install.packages("elasticnet")
+library(elasticnet)
+
+sparse.pca.result <- spca(amatout$imputed, K = 2, type = "predictor", sparse = "varnum", para = c(47, 47))
+####
+sparse.pca.result$pev
+sparse.pca.result$var.all
+listtrain<-vector(mode="list")
+numreptest=20
+
+niterations=300
+nelite=5
+npop=200
+mutprob=.8
+mutintensity=2
+trainsizevec=c(100,300,600, 1000)
+errorstatvec<-c("AOPT","CDMAX","CDMAX0","CDMAX2","CDMEAN","CDMEAN0","CDMEAN2","CDMEANMM","DOPT","EOPT","GAUSSMEANMM","GOPTPEV","GOPTPEV2","PEVMAX","PEVMAX0","PEVMAX2","PEVMEAN","PEVMEAN0","PEVMEAN2","PEVMEANMM")
+errorstatvec2<-setdiff(errorstatvec,c("CDMEANMM","PEVMEANMM", "GAUSSMEANMM"))
+#errorstatvec2<-errorstatvec2[1:5]
+errorstatvec2<-c("PEVMEAN")
+errorstat=errorstatvec2[1]
+allselectected<-vector(mode="list")
+
+itrainselect<-1
+
+
+for (errorstat in errorstatvec2){
+  print(errorstat)
+  
+  cormatrs<-c()
+  cormatrstest<-c()
+  pevmatrs<-c()
+  cormatopt<-c()
+  cormatopttest<-c()
+  pevmatopt<-c()
+  cormatopt2<-c()
+  cormatopttest2<-c()
+  pevmatopt2<-c()
+  
+  reptest=1
+  for (reptest in 1:numreptest){
+    LeaveoutforTest<-sample(rownames(PCgeno), 50)
+    Testy<-blupsdata[blupsdata[,1]%in%LeaveoutforTest,]
+    y<-blupsdata
+    ncol(y)
+    X<-PCgeno[!(rownames(PCgeno)%in%LeaveoutforTest),]
+    ntrain=trainsizevec[1]
+    for (ntrain in trainsizevec){
+      print(ntrain)
+      
+      #NOTE: Increase niterations and npop substantially for better convergence.
+      minimums<-c()
+      corsopt<-c()
+      corsopttest<-c()
+      minimums2<-c()
+      corsopt2<-c()
+      corsopttest2<-c()
+      rep=1
+      for (rep in 1:2){
+        print(rep)
+        
+        
+        ListTrain1<-GenAlgForSubsetSelectionNoTest(P=X,ntoselect=ntrain,npop=npop, nelite=nelite, mutprob=mutprob, mutintensity=mutintensity,niterations=niterations, lambda=1e-5, plotiters = T, errorstat=errorstat,C=NULL, mc.cores=3, tolconv=1e-5)
+        
+        ListTrain2<-GenAlgForSubsetSelection(P=PCgeno,Candidates=rownames(PCgeno)[!(rownames(PCgeno)%in%LeaveoutforTest)], Test=LeaveoutforTest, ntoselect=ntrain,npop=npop, nelite=nelite, mutprob=mutprob, mutintensity=mutintensity,niterations=niterations, lambda=1e-5, plotiters = T, errorstat=errorstat,C=NULL, mc.cores=3, tolconv=1e-5)
+        
+        
+        allselectected[[itrainselect]]<-ListTrain1
+        itrainselect=itrainselect+1
+        allselectected[[itrainselect]]<-ListTrain2
+        itrainselect=itrainselect+1
+        minimums<-c(minimums,min(ListTrain1[[nelite+1]]))
+        minimums2<-c(minimums2,min(ListTrain2[[nelite+1]]))
+        train<-factor(ListTrain1[[1]], levels=rownames(amatout$A))
+        train2<-factor(ListTrain2[[1]], levels=rownames(amatout$A))
+        test=factor(setdiff(rownames(X),train), levels=rownames(amatout$A))
+        test2=factor(setdiff(rownames(X),train2), levels=rownames(amatout$A))
+        
+        LeaveoutforTest=factor(LeaveoutforTest, levels=rownames(amatout$A))
+        
+        Ztrain<-model.matrix(~-1+train)
+        Ztrain2<-model.matrix(~-1+train2)
+        Ztest<-model.matrix(~-1+test)
+        Ztest2<-model.matrix(~-1+test2)
+        ZtestLeaveout<-model.matrix(~-1+LeaveoutforTest)
+        
+        for (traitcol in 2:7){
+          ##predictions by optimized sample1
+          ytrainopt1<-Ztrain%*%y[,traitcol]
+          Xtrainopt1<-Ztrain%*%rep(1, nrow(y))
+          modelopt1<-emmreml(y=ytrainopt1,X=Xtrainopt1, Z=Ztrain, K=amatout$A)
+          ytrainopt2<-Ztrain2%*%y[,traitcol]
+          Xtrainopt2<-Ztrain2%*%rep(1, nrow(y))
+          modelopt2<-emmreml(y=ytrainopt2,X=Xtrainopt2, Z=Ztrain2, K=amatout$A)
+          # modelopt1<-lm(ytrainopt1~1+Xtrainopt1)
+          #predictopt1<-cbind(rep(1, nrow(Xtest)),Xtest)%*%modelopt1$coefficients
+          predictopt1<-Ztest%*%modelopt1$uhat
+          corsopt<-c(corsopt, cor(predictopt1,Ztest%*%y[,traitcol]))
+          predictopt2<-ZtestLeaveout%*%modelopt1$uhat
+          corsopttest<-c(corsopttest, cor(predictopt2,ZtestLeaveout%*%y[,traitcol]))
+          predictopt2<-Ztest2%*%modelopt2$uhat
+          corsopt2<-c(corsopt2, cor(predictopt2,Ztest2%*%y[,traitcol]))
+          predictopt22<-ZtestLeaveout%*%modelopt2$uhat
+          corsopttest2<-c(corsopttest2, cor(predictopt22,ZtestLeaveout%*%y[,traitcol]))
+        }
+      }
+      cormatopt<-rbind(cormatopt, corsopt)
+      cormatopttest<-rbind(cormatopttest, corsopttest)
+      cormatopt2<-rbind(cormatopt2, corsopt2)
+      cormatopttest2<-rbind(cormatopttest2, corsopttest2)
+      
+      pevmatopt<-rbind(pevmatopt, minimums)
+      pevmatopt2<-rbind(pevmatopt2, minimums2)
+      
+      ###predictions by a random sample of the same size
+      corvecrs<-c()
+      corvecrstest<-c()
+      pevvecrs<-c()
+      for (rep in 1:100){
+        rs<-sample(rownames(X), ntrain)
+        train<-factor(rs, levels=rownames(amatout$A))
+        test=factor(setdiff(rownames(X),train), levels=rownames(amatout$A))
+        Ztrain<-model.matrix(~-1+train)
+        Ztest<-model.matrix(~-1+test)
+        if (!(errorstat%in%c("CDMEANMM","PEVMEANMM", "GAUSSMEANMM"))){
+          pevrs<-do.call(errorstat, list(train,setdiff(rownames(X), train), X, 1e-5))
+        }
+        else {
+          pevrs<-do.call(errorstat, list(train,setdiff(rownames(X), train), solve(amatout$A),amatout$A,1))
+        }
+        pevvecrs<-c(pevvecrs, pevrs)  
+        for (traitcol in 2:7){
+          ytrainrs<-Ztrain%*%y[,traitcol]
+          Xtrainrs<-Ztrain%*%rep(1, nrow(y))
+          modelrs<-emmreml(y=ytrainrs,X=Xtrainrs, Z=Ztrain, K=amatout$A)
+          predictrs<-Ztest%*%modelrs$uhat
+          corvecrs<-c(corvecrs,cor(predictrs, Ztest%*%y[,traitcol]))
+          predictrstest<-ZtestLeaveout%*%modelrs$uhat
+          corvecrstest<-c(corvecrstest,cor(predictrstest, ZtestLeaveout%*%y[,traitcol]))
+        }
+      }
+      cormatrs<-rbind(cormatrs,corvecrs)   
+      cormatrstest<-rbind(cormatrstest,corvecrstest)   
+      
+      pevmatrs<-rbind(pevmatrs,pevvecrs)   
+    }
+  }
+  dim(cormatrs)
+  dim(cormatopt)
+  dim(pevmatrs)
+  dim(pevmatopt)
+  save(cormatrs, cormatopt, cormatopt2, cormatrstest, cormatopttest, cormatopttest2, allselectected,file=paste("NewSamplesizeselectionCoresetwheatdata",errorstat,".RData", sep=""))
+  
+  minmaxdiff<-colMeans(matrix(rowMeans(pevmatrs), nrow=numreptest, byrow=T))-colMeans(matrix(rowMeans(pevmatopt2), nrow=numreptest, byrow=T))
+  
+  ylim=c(min(c(min(rowMeans(pevmatopt)),min(c(rowMeans(pevmatrs)),min(c(minmaxdiff))))),max(c(max(rowMeans(pevmatopt)),max(c(rowMeans(pevmatrs))),max(c(minmaxdiff)))))
+  postscript(paste("numbertoselectwithtest",errorstat,".eps", sep=""))
+  vectoplot<-colMeans(matrix(rowMeans(pevmatopt), nrow=numreptest, byrow=T))
+  vecsdtoplot<-colMeans(matrix(apply(pevmatopt, 1, sd), nrow=numreptest, byrow=T))
+  plot(trainsizevec,vectoplot,ylim=ylim, type="l", col="red", ylab=errorstat, xlab="Training size")
+  epsilon <- 0.5
+  segments(trainsizevec-epsilon,vectoplot-vecsdtoplot,trainsizevec+epsilon,vectoplot+vecsdtoplot)
+  par(new=T)
+  vectoplot<-colMeans(matrix(rowMeans(pevmatrs), nrow=numreptest, byrow=T))
+  vecsdtoplot<-colMeans(matrix(apply(pevmatrs, 1, sd), nrow=numreptest, byrow=T))
+  plot(trainsizevec,vectoplot,ylim=ylim,axes=F, xlab="", ylab="", type="l")
+  epsilon <- 0.5
+  segments(trainsizevec-epsilon,vectoplot-vecsdtoplot,trainsizevec+epsilon,vectoplot+vecsdtoplot)
+  par(new=T)
+  plot(trainsizevec,minmaxdiff,ylim=ylim,axes=F, xlab="", ylab="", type="l", col="blue")
+  dev.off()
+  dim(cormatrs)
+  dim(cormatrstest)
+  traitcol=2
+  for (traitcol in 2:7){
+    cormatrstrait<-cormatrs[,(1:ncol(cormatrs))%%6==(traitcol-2)]
+    cormatrstesttrait<-cormatrstest[,(1:ncol(cormatrstest))%%6==(traitcol-2)]
+    
+    corsopttrait<-cormatopt[,(1:ncol(cormatopt))%%6==(traitcol-2)]
+    corsopttesttrait<-cormatopttest[,(1:ncol(cormatopttest))%%6==(traitcol-2)]
+    corsopttrait2<-cormatopt2[,(1:ncol(cormatopt2))%%6==(traitcol-2)]
+    corsopttesttrait2<-cormatopttest2[,(1:ncol(cormatopttest2))%%6==(traitcol-2)]
+    meanrs<-colMeans(matrix(rowMeans(cormatrstrait), nrow=numreptest, byrow=T))
+    sdrs<-colMeans(matrix(apply(cormatrstrait, 1, sd), nrow=numreptest, byrow=T))
+    meanopt<- colMeans(matrix(rowMeans(corsopttrait), nrow=numreptest, byrow=T))
+    
+    sdopt<-colMeans(matrix(apply(corsopttrait, 1, sd), nrow=numreptest, byrow=T))
+    meanopt2<- colMeans(matrix(rowMeans(corsopttrait2), nrow=numreptest, byrow=T))
+    
+    sdopt2<-colMeans(matrix(apply(corsopttrait2, 1, sd), nrow=numreptest, byrow=T))
+    meanrstest<-colMeans(matrix(rowMeans(cormatrstesttrait), nrow=numreptest, byrow=T))
+    sdrstest<-colMeans(matrix(apply(cormatrstesttrait, 1, sd), nrow=numreptest, byrow=T))
+    
+    meanopttest<- colMeans(matrix(rowMeans(corsopttesttrait), nrow=numreptest, byrow=T))
+    sdopttest<-colMeans(matrix(apply(corsopttesttrait, 1, sd), nrow=numreptest, byrow=T))
+    meanopttest2<- colMeans(matrix(rowMeans(corsopttesttrait2), nrow=numreptest, byrow=T))
+    sdopttest2<-colMeans(matrix(apply(corsopttesttrait2, 1, sd), nrow=numreptest, byrow=T))
+    
+    ylim=c(min(c(min(c(meanrs)),min(c(meanopttest)) ,min(c(meanopttest2)),min(c(meanrstest)),min(c( meanopttest)),min(c( meanopttest2))))-.05,max(c(max(c(meanrs)),max(c(meanopttest)),max(c(meanopttest2)) ,max(c(meanrstest)),max(c( meanopttest)),max(c( meanopttest2))))+.05)
+    
+    postscript(paste("Newnumbertoselectwithtestcors",traitcol,errorstat,".eps", sep=""))
+    epsilon <- .5
+    
+    plot(trainsizevec,meanopttest ,ylim=ylim, col="green", type="l", main=paste(colnames(blupsdata)[traitcol], errorstat, sep="_"), ylab="correlation",xlab="Training size")
+    
+    segments(trainsizevec-epsilon,meanopttest-sdopttest,trainsizevec+epsilon,meanopttest+sdopttest, col="green")
+    legend("topleft", legend = c( "opt_notest_test", "opt_test_test", "rs_test" ), col = c("green", "blue", "brown"),
+           ncol = 2, cex = .5, lwd = 1,  text.col = c("green", "blue", "brown"))
+    
+    par(new=T)
+    plot(trainsizevec,meanopttest2 ,ylim=ylim,axes=F, xlab="", ylab="", type="l", col="blue")
+    
+    segments(trainsizevec-epsilon,meanopttest2-sdopttest2,trainsizevec+epsilon,meanopttest2+sdopttest2, col="blue")
+    
+    par(new=T)
+    plot(trainsizevec,meanrstest,ylim=ylim,axes=F, xlab="", ylab="", type="l", col="brown")
+    
+    segments(trainsizevec-epsilon,meanrstest-sdrstest,trainsizevec+epsilon,meanrstest+sdrstest, col="brown")
+    dev.off()
+  }
+}

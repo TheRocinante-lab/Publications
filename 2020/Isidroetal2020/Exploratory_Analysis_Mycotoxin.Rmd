@@ -1,0 +1,779 @@
+---
+title: "Explanatory analysis"
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  chunk_output_type: console
+---
+```{r set-options, echo=FALSE, cache=TRUE}
+options(width = 1900)
+```
+
+```{r zero, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, eval = TRUE)
+```
+
+
+```{r,echo=FALSE,collapse=TRUE,message=FALSE,warning=FALSE}
+
+
+rm(list=ls())
+setwd("~/Dropbox/Akdemir-Sanchez/JULIO/GWAS_OATS/Project_GWAS")
+source("multiplot.R")
+packages <- c( "openxlsx","png","gapminder","randomcoloR",
+              "BLR","ggpubr","corrplot","RNOmni", "knitr", "ggrepel","EMMREML","STPGA","sommer","stringi","knitr","readxl","stringr","gridExtra","ggfortify","factoextra","FactoMineR","cluster","tables","kableExtra","beeswarm","ggpmisc","egg","rrBLUP","Hmisc","reshape","GLMMadaptive","PerformanceAnalytics","ggpubr","igraph","tidyverse","extrafont","extrafontdb","cowplot","sommer","insight")
+package.check <- lapply(packages, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+
+load("/Users/User/Dropbox/Akdemir-Sanchez/JULIO/GWAS_OATS/Project_GWAS/Datareadybefore_Gwas.RData")
+
+#load("/Users/jis/Dropbox/Akdemir-Sanchez/JULIO/GWAS_OATS/Project_GWAS/Datareadybefore_Gwas.RData")
+```
+
+
+
+```{r}
+
+#str(dat)
+#sum(complete.cases(dat$origin)=="FALSE")
+
+
+#dat <- dat[na.omit(dat$origin),]
+colnames(pheno)[24] <- "SumT2HT2"
+colnames(pheno)[26] <- "T2"
+colnames(pheno)[27] <- "HT2"
+dat <- pheno
+dat <- dat[!is.na(dat$origin), ]
+dat$origin <- droplevels(dat$origin,exclude=c("GER"))
+dat <- dat[!is.na(dat$origin), ]
+levels(dat$origin) <- c("Finland","France","United Kigndom","Hungary","Ireland","Norway","Poland", "Sweden")
+datoxin <- dat[,c(1:11,24:35,39)]
+
+#str(dat)
+#str(datoxin)
+#table(dat$origin)
+#table(datoxin$origin)
+#library(plyr)
+#newlabels <- revalue(dat$origin, c("1"="Finland","2"= "France","3"= "United Kigndom","4"= "Hungary","5"="Ireland","6"= "Norway","7"= "Poland","8"= "Sweden"))
+#PercentageH <- datoxin$Sum_transf[datoxin$High_Low=="High"]/sum(datoxin$Sum_transf)
+#datoxin$Sum_transf[datoxin$High_Low=="Low"]/sum(datoxin$Sum_transf)
+```
+
+
+```{r}
+#font_import()
+#loadfonts()
+
+
+
+datoxin %>% 
+  count(origin,High_Low,Sum_transf,sort=TRUE) %>% 
+  mutate(origin= fct_reorder(origin,Sum_transf,sum)) %>% 
+  ggplot(aes(origin,Sum_transf,fill=High_Low))+
+  geom_bar(stat = "identity")+
+  coord_flip()+
+  expand_limits(y=0) +
+  scale_fill_grey(start = 0.8, end = 0.5)+
+  facet_wrap(~ High_Low)+
+  labs(x="Country of origin",y="Counts with High or Low Sum of T2_HT2 toxin")+
+  theme_classic()+
+  theme(legend.position = "none",text=element_text(size=12, family="Times New Roman"))
+        #axis.text.y = element_text(color = "grey20", size = 12, angle = 0, hjust = 1, vjust = 0, face = "plain"))
+
+```
+
+
+
+```{r}
+datoxin %>% 
+  count(origin,High_Low,Sum_transf,sort=TRUE) %>% 
+  mutate(origin= fct_reorder(origin,Sum_transf,sum)) %>% 
+  ggplot(aes(origin,Sum_transf,fill=High_Low))+
+  geom_bar(stat = "identity",width = 0.5)+
+  coord_flip()+
+  expand_limits(y=0)
+  
+```
+
+```{r}
+datoxin %>% 
+  count(origin,High_Low,Sum_transf,sort=TRUE) %>% 
+  mutate(origin= fct_reorder(origin,Sum_transf,sum)) %>% 
+  ggplot(aes(origin,Sum_transf,fill=High_Low))+
+  geom_bar(stat = "identity",width = 0.5)+
+  coord_flip()+
+  expand_limits(y=0) +
+  scale_fill_grey(start = 0.8, end = 0.5 )+
+  labs(x="Country of origin",y="Counts with High or Low Sum of T2_HT2 toxin")+
+  theme_classic()+
+  theme(legend.position =c(0.9,0.2),text=element_text(size=12, family="Times New Roman"))+
+  scale_y_continuous(limits = c(0,500))
+```
+
+
+```{r}
+datoxin %>% 
+  group_by(origin,Period) %>% 
+  ggplot(aes(origin,Sum_transf,fill=Period))+
+  geom_boxplot()+
+  scale_fill_grey(start = 0.2, end = 0.5 )+
+  expand_limits(y=0)
+```
+
+
+```{r,eval=FALSE}
+datoxin %>% 
+  count(origin,High_Low,Sum_transf,sort=TRUE) %>% 
+  mutate(origin= fct_reorder(origin,Sum_transf,sum)) %>% 
+  ggplot(aes(origin,Sum_transf,fill=High_Low))+
+  geom_bar(stat = "identity")+
+  coord_flip()+
+  expand_limits(y=0)
+```
+
+```{r,eval=FALSE}
+datoxin %>% 
+  count(origin,High_Low,Sum_transf,sort=TRUE) %>% 
+   mutate(Perce=n/sum(n)) %>% 
+  mutate(origin= fct_reorder(origin,Sum_transf,sum)) %>% 
+   ggplot(aes(origin,Perce,fill=High_Low))+
+  geom_bar(stat = "identity")+
+  coord_flip()+
+  expand_limits(y=0)
+
+#table(dat$origin)
+
+```
+
+```{r}
+#colgray <- gray.colors(5, start = 0.2, end = 0.9, alpha = 0.1, rev = FALSE)
+colgray2 <- gray.colors(10, start = 0.1, end = 0.9, gamma = 5,alpha = 0.2)
+
+a <- datoxin %>%
+  count(Year,Sum_transf,sort=TRUE) %>% 
+  ggplot(aes(Sum_transf,fill=Year)) + 
+  geom_histogram(binwidth=0.15,alpha=0.7)+
+  scale_x_continuous(name = "Sum T2-HT2 Toxin") +
+  scale_y_continuous(name = "count", limits=c(0,30),labels = c("0", "10", "20", "30")) +
+  scale_fill_manual(values = colgray2 ) +
+    theme_classic()+
+  theme(legend.position = c(0.88,0.8),legend.background = element_blank())
+
+
+```
+
+
+```{r}
+b <- datoxin %>%
+  count(Year,T2_Transf ,sort=TRUE) %>% 
+  ggplot(aes(T2_Transf ,fill=Year)) + 
+  geom_histogram(binwidth=0.15,alpha=0.7)+
+  scale_x_continuous(name = "T2 Toxin") +
+  scale_y_continuous(name = "count", limits  = c(0, 30)) +
+ scale_fill_manual(values = colgray2 ) +
+    theme_classic()+
+  theme(legend.position = c(0.88,0.8),legend.background = element_blank()) 
+
+```
+
+
+```{r}
+c <- datoxin %>%
+  count(Year,HT2_Trans ,sort=TRUE) %>% 
+  ggplot(aes(HT2_Trans ,fill=Year)) + 
+  geom_histogram(binwidth=0.15,alpha=0.7)+
+  scale_x_continuous(name = "HT2 Toxin") +
+  scale_y_continuous(name = "count", limits  = c(0, 30)) +
+  scale_fill_manual(values = colgray2 ) +
+    theme_classic()+
+  theme(legend.position = c(0.88,0.8),legend.background = element_blank())
+
+```
+
+
+
+
+
+
+
+```{r}
+d <- datoxin %>%
+  count(Year,FungalLOD_tran ,sort=TRUE) %>% 
+  ggplot(aes(FungalLOD_tran ,fill=Year)) + 
+  geom_histogram(binwidth=0.15,alpha=0.7)+
+  scale_x_continuous(name = "Fungal Biomass") +
+  scale_y_continuous(name = "count", limits  = c(0, 40)) +
+   scale_fill_manual(values = colgray2 ) +
+    theme_classic()+
+  theme(legend.position = c(0.82,0.84),legend.background = element_blank())
+```
+
+
+```{r}
+pdf("Hist_Toxin.pdf",width=8,height=6)
+multiplot(a,b,c,d,cols = 2)
+dev.off()
+```
+
+
+```{r,eval=FALSE}
+
+datoxin %>% 
+  group_by(High_Low,Period) %>% 
+  ggplot(aes(High_Low,Sum_transf,fill=Period))+
+  geom_boxplot()+
+  #scale_fill_grey(start = 0.2, end = 0.5 )+
+  expand_limits(y=0)
+```
+
+
+
+# Other toxins
+### DON
+```{r}
+datoxin %>%
+  mutate(logDON=log(0.1+DON)) %>% 
+  count(Year,logDON ,sort=TRUE) %>% 
+  ggplot(aes(logDON ,fill=Year)) + 
+  geom_histogram(binwidth=0.1,alpha=0.3)+
+  scale_x_continuous(name = "DON") +
+  scale_y_continuous(name = "count") +
+  scale_fill_manual(values = c("#D55E00", "#009E73")) +
+  theme(legend.position = c(0.9,0.9),legend.background = element_blank())
+
+
+#datoxin %>%
+ # mutate(logDON=log(0.1+DON)) %>% 
+#  count(Year,logDON ,sort=TRUE) %>% 
+#  ggplot(aes(logDON,fill=Year)) + 
+#  geom_histogram(binwidth=0.2,alpha=0.7)+
+ # scale_x_continuous(name = "Fungal Biomass") +
+#  scale_y_continuous(name = "count", limits  = c(0, 10)) +
+#  scale_fill_manual(values = c("#D55E00", "#009E73")) +
+ # theme(legend.position = c(0.15,0.8),legend.background = element_blank())
+
+#table(datoxin$DON==0)
+
+#DONcontamination <- datoxin[!datoxin$DON==0,]
+
+#table(DONcontamination$Genebank)
+#table(DONcontamination$Period)
+#table(DONcontamination$origin)
+#which(table(unique(DONcontamination$GID2))>0)
+#table(DONcontamination$Year)
+#print(DONcontamination, n=30)
+#summary(DONcontamination)
+```
+
+###### 718 samples did not show value for DON (0). Just 22 samples showed DON>0.-->
+###### These were the genotypes G1 G114 G137 G155   G2  G29   G4  G42  G74  G88   G9 
+###### More Modern varieties than old varities showed DON infection.
+
+
+### NIV
+```{r}
+datoxin %>%
+  mutate(logNIV=log(0.1+NIV)) %>% 
+  count(Year,logNIV ,sort=TRUE) %>% 
+  ggplot(aes(logNIV ,fill=Year)) + 
+  geom_histogram(binwidth=0.5,alpha=0.3)+
+  scale_x_continuous(name = "NIV") +
+  scale_y_continuous(name = "count") +
+  scale_fill_manual(values = c("#D55E00", "#009E73")) +
+  theme(legend.position = c(0.9,0.9),legend.background = element_blank())
+```
+
+### ZEN
+```{r}
+datoxin %>%
+  mutate(logZEN=log(0.1+ZEN)) %>% 
+  count(Year,logZEN ,sort=TRUE) %>% 
+  ggplot(aes(logZEN ,fill=Year)) + 
+  geom_histogram(binwidth=0.1,alpha=0.3)+
+  scale_x_continuous(name = "ZEN") +
+  scale_y_continuous(name = "count") +
+  scale_fill_manual(values = c("#D55E00", "#009E73")) +
+  theme(legend.position = c(0.9,0.9),legend.background = element_blank())
+```
+
+### AcDON_15
+```{r}
+datoxin %>%
+  mutate(logAcD_15=log(0.1+AcDON_15)) %>% 
+  count(Year,logAcD_15 ,sort=TRUE) %>% 
+  ggplot(aes(logAcD_15 ,fill=Year)) + 
+  geom_histogram(binwidth=0.1,alpha=0.3)+
+  scale_x_continuous(name = "AcDON_15") +
+  scale_y_continuous(name = "count") +
+  scale_fill_manual(values = c("#D55E00", "#009E73")) +
+  theme(legend.position = c(0.9,0.9),legend.background = element_blank())
+```
+
+
+# Summary Pheno data for T2-HT2
+
+```{r}
+all <- datoxin %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+
+all %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)  
+ 
+
+```
+
+
+#### By Year
+```{r}
+t1 <- datoxin %>% 
+  group_by(Year) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+
+t1 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)  
+ 
+
+```
+
+#### By Origin
+```{r}
+t2 <- datoxin %>% 
+  group_by(origin) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))      
+t2 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)  
+ 
+
+```
+
+#### By Period
+
+```{r}
+t3 <- datoxin %>% 
+  group_by(Period) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+t3 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+ 
+
+```
+#### By Year and Period
+
+```{r}
+t4 <- datoxin %>% 
+  group_by(Year,origin) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+t4 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+ 
+```
+
+#### By Genebank
+```{r}
+t5 <- datoxin %>% 
+  group_by(Genebank) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+t5 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T) 
+ 
+```
+
+
+#### By Block
+```{r}
+
+t6 <- datoxin %>% 
+  group_by(Block) %>% 
+  summarize(MeanSum=mean(Sum_transf), MeanHT2=mean(HT2_Trans),MeanT2=mean(T2_Transf),MeanFungal=mean(FungalLOD_tran), n=n(),
+            sdSum=sd(Sum_transf),sdHT=sd(HT2_Trans), sdT2=sd(T2_Transf),sdFun=sd(FungalLOD_tran), 
+            seSum=sdSum/sqrt(n),seHT2=sdHT/sqrt(n),seT2=sdT2/sqrt(n), seFun=sdFun/sqrt(n))
+
+t6 %>%
+kable(digits = 2)%>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+ 
+```
+
+# Summary phenotypes other toxins
+
+#### By year
+```{r}
+
+t7 <- datoxin %>% 
+  group_by(Year) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t7 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+
+```
+#### By Period
+
+```{r}
+
+t8 <- datoxin %>% 
+  group_by(Period) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t8 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+
+```
+
+#### By Origin
+```{r}
+t9 <- datoxin %>% 
+  group_by(origin) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t9 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+```
+
+
+
+#### By Year and Origin
+
+```{r}
+t10 <- datoxin %>% 
+  group_by(Year,origin) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t10 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+```
+
+
+#### By Year and Period
+
+```{r}
+t11 <- datoxin %>% 
+  group_by(Year, Period) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t11 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+```
+
+
+
+#### By Genebank
+
+```{r}
+t12 <- datoxin %>% 
+  group_by(Genebank) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t12 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+```
+
+#### By Block
+
+```{r}
+
+t13 <- datoxin %>% 
+  group_by(Block) %>% 
+  summarize(MeanZen=mean(ZEN), MeanNIV=mean(NIV),MeanDON=mean(DON),MeanAcD_15=mean(AcDON_15), n=n(),
+            sdZen=sd(ZEN),sdNIV=sd(NIV), sdDON=sd(DON),sdAcD_15=sd(AcDON_15), 
+            seZen=sdZen/sqrt(n),seNIV=sdNIV/sqrt(n),seDON=sdDON/sqrt(n), seAcD_15=sdAcD_15/sqrt(n))
+t13 %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+
+```
+
+
+```{r,echo=FALSE,results='hide'}
+library(lme4)
+library(insight) #Calculate variance components easily
+library(sommer)
+m1 <-lmer(Sum_transf ~ Year+ Block%in%Year+origin+(1|GID2),data=datoxin)
+ranefm1<-ranef(m1)
+summary(m1)
+#get_variance(m1)
+Vfix <- get_variance_fixed(m1)
+Vres <- get_variance_residual(m1)
+Vran <- get_variance_random(m1)
+Vdata <- var(datoxin$Sum_transf)
+#the sum of the variance components is close to the total variance of the data
+Vfix+Vres+Vran
+
+her1 <- round(as.numeric(Vran/(Vran+Vres)),2)
+
+### ANOTHER WAY TO CALCULATE VARIANCES
+#Var_Random_effect <- as.numeric(VarCorr(model1)) 
+#Var_Residual <- attr(VarCorr(model1), "sc")^2
+#Var_Fix_effect <- var(predict(lm(Sum_transf~Year+Year+ Block%in%Year+origin,data=datoxin)))
+#Var_Random_effect+Var_Residual+Var_Fix_effect
+#the sum of the variance components is close to the total variance of the data
+#var(datoxin$Sum_transf)
+BLUPS_sum_m1<-data.frame(GID=rownames(ranefm1$GID), Blups=ranefm1$GID$`(Intercept)`)
+#hist(BLUPS_sum_m1$Blups,breaks=10)
+
+## MODEL 2 just with YEAR and BLOCK nested to YEAR as fixed effect
+m2 <- lmer(Sum_transf ~ Year+ Block%in%Year+(1|GID2),data=datoxin)
+
+m2  <-lmer(Sum_transf ~ Year+ Block%in%Year+origin+(1|GID2),data=datoxin)
+ranefm2<-ranef(m2)
+#ranefm2$GID$`(Intercept)`
+
+Vfixm2 <- get_variance_fixed(m2)
+Vresm2 <- get_variance_residual(m2)
+Vranm2 <- get_variance_random(m2)
+her2 <- round(as.numeric(Vranm2/(Vranm2+Vresm2)),2) #divided by 2 reps?
+BLUPS_sum_m2<-data.frame(GID=rownames(ranefm2$GID), Blups=ranefm2$GID$`(Intercept)`)
+#hist(BLUPS_sum_m2$Blups,breaks=10)
+
+
+## MODEL 3 USING SOMMER BLOCK nested to YEAR as fixed effect.
+
+m3 <- mmer(Sum_transf~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m4 <- mmer(T2_Transf~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m5 <- mmer(HT2_Trans~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m6 <- mmer(FungalLOD_tran~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+
+plot(m3)
+title(main="SumT2HT2")
+plot(m4)
+title(main="T2")
+plot(m5)
+title(main="HT2")
+plot(m6)
+title(main="Fungal Biomass")
+
+colgray2
+hist(residuals.mmer(m3),col="#94949433", main = "SumT2HT2",xlab="Sum T2-HT2")
+hist(residuals.mmer(m4),col="#AAAAAA33", main = "T2",xlab="T2")
+hist(residuals.mmer(m5),col="#C3C3C333", main = "HT2",xlab="HT2")
+hist(residuals.mmer(m6),col="#CCCCCC33", main = "Biomass",xlab="Fungal Biomass")
+
+
+summary(m3)
+pin(m3, Vp.Sum_transf~(V1+V2)) #phenotypic variance conditional on fixed effects in the model
+herSUM <- pin(m3, h2.Sum_transf~V1/(V1+V2/2))
+
+BLUPS_SUM <-as.data.frame(m3$U$GID2$Sum_transf)
+BLUPS_T2<-as.data.frame(m4$U$GID2$T2_Transf)
+BLUPS_HT2<-as.data.frame(m5$U$GID2$HT2_Trans)
+BLUPS_Biomass<-as.data.frame(m6$U$GID2$FungalLOD_tran)
+
+BLUPs <- as.data.frame(cbind(BLUPS_SUM,BLUPS_T2,BLUPS_HT2,BLUPS_Biomass))
+colnames(BLUPs) <- c("Blups_SUM","Blups_T2","Blups_HT2","Blups_Biomass")
+
+write.csv(BLUPs,file="BLUPs_SumT2_HT2.csv")
+herSUM <- pin(m3, h2.Sum_transf~V1/(V1+V2/2))
+herT2 <- pin(m4, h2.T2_Transf~V1/(V1+V2/2))
+herHT2 <- pin(m5, h2.HT2_Trans~V1/(V1+V2/2))
+herBiomass <- pin(m6, h2.FungalLOD_tran~V1/(V1+V2/2))
+
+heritability <- as.data.frame(rbind(herSUM,herT2,herHT2,herBiomass))
+
+
+dattop10 <- dat[dat$accession_name%in%top10 & dat$Year==2017,]
+write.csv(dattop10,file="top10.csv")
+
+top10 <- c("J_geva Koidukaer",
+"FLORALE","Nidar I",
+"STARLETTE DE MOYENCOURT",
+"KENT BERLIE",
+"Kwant",
+"Wexford Tawny",
+"Sandy",
+"Urai tf.",
+"Glasnevin Major")
+write.csv(BLUPs,"Blups.T2.csv")
+BLUPs[sort(BLUPs$Blups_SUM,decreasing = F)[1:10]]
+#why this doesn´t work
+K.mat2 <- K.mat[rownames(K.mat)%in%datoxin$GID2,colnames(K.mat)%in%datoxin$GID2]
+#mmer(Sum_transf~Year+ Block%in%Year+origin, random =~ GID2+GID2*Year,G=list(GID2=K.mat2),getPEV = T,data = datoxin)
+
+```
+
+### BLUPS Graphs
+
+## Assumptions
+```{r}
+plot(m3)
+title(main="SumT2HT2")
+plot(m4)
+title(main="T2")
+plot(m5)
+title(main="HT2")
+plot(m6)
+title(main="Fungal Biomass")
+```
+
+```{r}
+
+b1 <- BLUPs %>% 
+  ggplot(aes(Blups_SUM))+
+  geom_histogram(bins=15,alpha=0.4)+
+  theme_classic()
+
+b2 <- BLUPs %>% 
+  ggplot(aes(Blups_T2))+
+  geom_histogram(bins=15,alpha=0.4)+
+  theme_classic()
+
+b3 <- BLUPs %>% 
+  ggplot(aes(Blups_HT2))+
+  geom_histogram(bins=15,alpha=0.4)+
+  theme_classic()
+
+b4 <- BLUPs %>% 
+  ggplot(aes(Blups_Biomass))+
+  geom_histogram(bins=13,alpha=0.4)+
+  theme_classic()
+
+multiplot(b1,b2,b3,b4,cols=2)
+
+```
+
+#### BLUPs summary info
+```{r}
+sumBLUPs <- as.data.frame(cbind(
+summary(BLUPs$Blups_SUM),
+summary(BLUPs$Blups_T2),
+summary(BLUPs$Blups_HT2),
+summary(BLUPs$Blups_Biomass)))
+
+colnames(sumBLUPs) <- c("Blups_SUM","Blups_T2","Blups_HT2","Blups_Biomass")
+
+sumBLUPs %>%
+  kable(digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+
+```
+
+### Heritability info
+```{r}
+heritability %>% 
+  kable(digits = 3) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F,font_size = 12,fixed_thead = T)
+
+```
+
+# Summary Phenotype without transformation
+```{r,results='hide'}
+str(datoxin)
+
+m7 <- mmer(SumT2HT2~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m8 <- mmer(T2~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m9 <- mmer(HT2~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+m10 <- mmer(FungalLOD_tran~Year+ Block%in%Year+origin, random =~ GID2,getPEV = T,data = datoxin)
+
+summary(m7)
+pin(m7, Vp.Sum_transf~(V1+V2)) #phenotypic variance conditional on fixed effects in the model
+herSUM <- pin(m7, h2.SumT2HT2~V1/(V1+V2/2))
+
+BLUPS_SUM <-as.data.frame(m7$U$GID2$SumT2HT2)
+BLUPS_T2<-as.data.frame(m8$U$GID2$T2)
+BLUPS_HT2<-as.data.frame(m9$U$GID2$HT2)
+BLUPS_Biomass<-as.data.frame(m10$U$GID2$FungalLOD_tran)
+
+BLUPs <- as.data.frame(cbind(BLUPS_SUM,BLUPS_T2,BLUPS_HT2,BLUPS_Biomass))
+colnames(BLUPs) <- c("Blups_SUM","Blups_T2","Blups_HT2","Blups_Biomass")
+
+herSUM2 <- pin(m7, h2.Sum_transf~V1/(V1+V2/4))
+herT22 <- pin(m8, h2.T2_Transf~V1/(V1+V2/4))
+herHT22 <- pin(m9, h2.HT2_Trans~V1/(V1+V2/4))
+herBiomass2 <- pin(m10, h2.FungalLOD_tran~V1/(V1+V2/4))
+
+heritability2 <- as.data.frame(rbind(herSUM2,herT22,herHT22,herBiomass2))
+
+summary(datoxin$FungalLOD_tran)
+```
+
+```{r}
+Percentageinfectionperorigin <- datoxin %>% 
+  select(High_Low,origin,Sum_transf) %>% 
+  group_by(origin) %>% 
+  count(High=High_Low=="High", Low=High_Low=="Low",n()) %>% 
+  mutate(per=(n/`n()`)*100) %>% 
+  select(origin,per)
+
+PercetageTotalinfection <- datoxin %>% 
+  select(High_Low,Sum_transf) %>% 
+   count(High=High_Low=="High", Low=High_Low=="Low",n()) %>% 
+  mutate(per=(n/`n()`)*100) %>% 
+  select(per)
+  
+```
+
+
+```{r}
+
+  
+
+toxin <- datoxin %>% 
+  mutate(origin=fct_reorder(origin,Sum_transf,sum)) %>% 
+  ggplot(aes(origin,Sum_transf,fill=High_Low))+
+  geom_bar(stat = "identity",width = 0.5)+
+  coord_flip()+
+  expand_limits(y=0) +
+  scale_fill_grey(start = 0.9, end = 0.5,name = "Sum T-2 & HT-2", labels = c("High values", "Low values"))+
+  labs(x="Country of Origin",y="Counts with High or Low Sum of T-2 & HT-2 toxin")+
+  theme_classic()+
+  theme(legend.position =c(0.9,0.2),text=element_text(size=12, family="Times New Roman"))+
+  scale_y_continuous(limits = c(0,600))
+
+toxin+
+  annotate("text", x = 1, y = 150, label = "95%",color="white")+
+  annotate("text", x = 1, y = 320, label = "5%",size=3.5,color="black")+
+  annotate("text", x = 2, y = 150, label = "92%",color="white")+
+  annotate("text", x = 2, y = 310, label = "8%",size=3.5,color="black")+
+  annotate("text", x = 3, y = 150, label = "92%",color="white")+
+  annotate("text", x = 3, y = 322, label = "8%",size=3.5,color="black")+
+  annotate("text", x = 4, y = 150, label = "88%",color="white")+
+  annotate("text", x = 4, y = 325, label = "12%",size=3.5,color="black")+
+  annotate("text", x = 5, y = 150, label = "90%",color="white")+
+  annotate("text", x = 5, y = 340, label = "10%",size=3.5,color="black")+
+  annotate("text", x = 6, y = 150, label = "81%",color="white")+
+  annotate("text", x = 6, y = 330, label = "19%",size=3.5,color="black")+
+  annotate("text", x = 7, y = 150, label = "87%",color="white")+
+  annotate("text", x = 7, y = 350, label = "13%",size=3.5,color="black")+
+  annotate("text", x = 8, y = 150, label = "91%",color="white")+
+  annotate("text", x = 8, y = 490, label = "9%",size=3.5,color="black")
+  ggsave("Count_HIGH_LOW.png",width=8,height=6, dpi=700)
+```

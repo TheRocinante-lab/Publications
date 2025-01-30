@@ -1,0 +1,265 @@
+##library(devtools)
+#install_github("kbroman/simcross")
+##library(simcross)
+#Rcpp::sourceCpp('~/Projects/GenomicMating/src/MatingPrograms.cpp')
+#source('~/Projects/GenomicMating/R/MatingPrograms.R', echo=FALSE)
+#source('~/Projects/GenomicMating/R/Amatinpieces.R', echo=FALSE)
+
+
+###LOad library
+library(GenomicMating)
+
+###Create 100 markers for two sets of populations of size 20.
+N=20
+nmarkers=100
+Markers<-c()
+for (i in 1:N){
+  Markers<-rbind(Markers,rbinom(nmarkers, 2,.1)-1)
+}
+
+
+Markers2<-c()
+for (i in 1:N){
+  Markers2<-rbind(Markers2,rbinom(nmarkers, 2,.1)-1)
+}
+
+###Marker effects for a trait.
+markereffects<-rep(0,nmarkers)
+markereffects[sample(1:nmarkers,nmarkers/2)]<-rnorm(nmarkers/2)
+Markers[1:5,1:5]
+
+#######Relationship matrices (K only for the first population.
+##K2 for both populations together.)
+#library(parallel)
+K=Amat.pieces(rbind(Markers), pieces=5) 
+
+K2=Amat.pieces(rbind(Markers,Markers2), pieces=5) 
+K[1:5,1:5]
+
+####putting names
+rownames(Markers)<-paste("l", 1:nrow(Markers),sep="_")
+rownames(Markers2)<-paste("l", (nrow(Markers)+1):(nrow(Markers)+nrow(Markers2)),sep="_")
+rownames(K2)<-colnames(K2)<-c(rownames(Markers),rownames(Markers2))
+rownames(K)<-colnames(K)<-c(rownames(Markers))
+
+
+###Best genotype in pop 1
+which.max(Markers%*%markereffects)
+markermap=as.matrix(data.frame(chr=rep(1,nmarkers),pos=seq(0,1,length=nmarkers)))
+
+colnames(Markers)<-1:nmarkers
+
+########Mating within pop 1, using method 1. 
+########Adjust genetic algorithm paparmeters for convergence.
+
+gasols<-getGaSolutions(Markers=Markers,Markers2=NULL, K=K, markereffects=markereffects,markermap=markermap,nmates=10,
+                       minparents=3, 
+                       impinbreedstepsize=.02, impvar=.01, 
+                       impforinbreed=.01,
+                       npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=T,
+                       mc.cores=1,nelite=20, mutprob=0.8, noself=T,
+                       method=1, type=0L, generation=0L)
+
+gasols
+
+
+######Mating between pop1 and pop2. Method 1.
+
+gasols1<-getGaSolutions(Markers=Markers,Markers2=Markers2, K=K2, markereffects,markermap=markermap,nmates=10,
+                        minparents=3, 
+                        impinbreedstepsize=.02, impvar=.02, 
+                        impforinbreed=.07,
+                        npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=T,
+                        mc.cores=2,nelite=20, mutprob=0.8, noself=F, method=1,
+                        type=0L, generation=0L)
+
+######Mating between pop1 and pop2. Method 2.
+
+gasols2<-getGaSolutions(Markers=Markers,Markers2=Markers2, K=K2, markereffects,markermap=markermap,nmates=10,
+                        minparents=3, 
+                        impinbreedstepsize=.02, impvar=.02, 
+                        impforinbreed=.07,
+                        npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=T,
+                        mc.cores=2,nelite=20, mutprob=0.8, noself=F, method=2,
+                        type=0L, generation=0L)
+
+
+####for method 3 polyploid. Markers need to be coded between 0 and 1.
+N=20
+nmarkers=100
+Markers<-c()
+for (i in 1:N){
+  Markers<-rbind(Markers,runif(nmarkers))
+}
+
+
+Markers2<-c()
+for (i in 1:N){
+  Markers2<-rbind(Markers2,runif(nmarkers))
+}
+
+markereffects<-rep(0,nmarkers)
+markereffects[sample(1:nmarkers,nmarkers/2)]<-rnorm(nmarkers/2)
+Markers[1:5,1:5]
+#library(parallel)
+K=Amat.pieces(rbind(Markers)*2-1, pieces=5) 
+
+K2=Amat.pieces(rbind(Markers,Markers2)*2-1, pieces=5) 
+K[1:5,1:5]
+rownames(Markers)<-paste("l", 1:nrow(Markers),sep="_")
+rownames(Markers2)<-paste("l", (nrow(Markers)+1):(nrow(Markers)+nrow(Markers2)),sep="_")
+rownames(K2)<-colnames(K2)<-c(rownames(Markers),rownames(Markers2))
+rownames(K)<-colnames(K)<-c(rownames(Markers))
+
+which.max(Markers%*%markereffects)
+markermap=as.matrix(data.frame(chr=rep(1,nmarkers),pos=seq(0,1,length=nmarkers)))
+
+colnames(Markers)<-1:nmarkers
+
+
+gasols3<-getGaSolutions(Markers=Markers,Markers2=Markers2, K=K2, markereffects,markermap=markermap,nmates=10,
+                        minparents=1, 
+                        impinbreedstepsize=.02, impvar=.02, 
+                        impforinbreed=.07,
+                        npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=T,
+                        mc.cores=1,nelite=20, mutprob=0.8, noself=F, method=3,
+                        type=0L, generation=0L)
+
+
+gasols3
+
+#############
+
+gasols4<-getGaSolutionsFrontier(Markers=Markers,Markers2=Markers2, K=K2, markereffects,markermap=markermap,nmates=10,npopGA=100, nitGA=100,
+                                mc.cores=1, mutprob=0.999, noself=T, method=3,
+                                type=2L, generation=1L, plotiters=T)
+
+
+
+###plot results
+
+pairs(gasols4[[1]])
+
+####Use plotGM.
+
+plotGM(GMsols=gasols3, type="3D", traitnum=1)
+plotGM(GMsols=gasols3, type="SOM", traitnum=1)
+
+
+
+####################################
+N=20
+nmarkers=100
+
+Markers<-c()
+for (i in 1:N){
+  Markers<-rbind(Markers,rbinom(nmarkers, 2,.1))
+}
+
+
+Markers2<-c()
+for (i in 1:N){
+  Markers2<-rbind(Markers2,rbinom(nmarkers, 2,.1))
+}
+
+markereffects<-rep(0,nmarkers)
+markereffects[sample(1:nmarkers,nmarkers/2)]<-rnorm(nmarkers/2)
+Markers[1:5,1:5]
+#library(parallel)
+K=Amat.pieces(rbind(Markers), pieces=5) 
+
+K2=Amat.pieces(rbind(Markers,Markers2), pieces=5) 
+K[1:5,1:5]
+rownames(Markers)<-paste("l", 1:nrow(Markers),sep="_")
+rownames(Markers2)<-paste("l", (nrow(Markers)+1):(nrow(Markers)+nrow(Markers2)),sep="_")
+rownames(K2)<-colnames(K2)<-c(rownames(Markers),rownames(Markers2))
+rownames(K)<-colnames(K)<-c(rownames(Markers))
+
+which.max(Markers%*%markereffects)
+markermap=as.matrix(data.frame(chr=rep(1,nmarkers),pos=seq(0,1,length=nmarkers)))
+
+colnames(Markers)<-1:nmarkers
+
+impvar=.01
+impforinbreed=.01
+gasols<-getGaSolutions(Markers=Markers,Markers2=NULL, K=K, markereffects=markereffects,markermap=markermap,nmates=10,
+                       minparents=1, 
+                       impinbreedstepsize=.02, impvar=impvar, 
+                       impforinbreed=impforinbreed,
+                       npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=F,
+                       mc.cores=1,nelite=20, mutprob=0.8, noself=T,
+                       method=1, type=0L, generation=0L, plotMates=T)
+
+
+
+
+
+impvar=.01
+impforinbreed=.01
+library(animation)
+
+saveGIF({ani.options(interval = 0.2, nmax = 50)
+  
+  for (impvar in seq(0.001,.4999, length=10)){
+    for (impforinbreed in seq(0.0001,.49999, length=10)){
+      
+      gasols<-getGaSolutions(Markers=Markers,Markers2=NULL, K=K, markereffects=markereffects,markermap=markermap,nmates=10,
+                             minparents=1, 
+                             impinbreedstepsize=.02, impvar=impvar, 
+                             impforinbreed=impforinbreed,
+                             npopGA=100, nitGA=10, miniters=10,minitbefstop=20,plotiters=F,
+                             mc.cores=1,nelite=20, mutprob=0.8, noself=T,
+                             method=1, type=0L, generation=0L, plotMates=T)
+      
+      
+      
+      
+      ebvs=Markers%*%markereffects
+      names(ebvs)<-colnames(K)<-rownames(K)<-paste("l",1:N,sep="_")
+      
+      
+      tableslected<-table(factor(unlist(c(gasols$Mates)), levels=paste("l",1:N,sep="_")))
+      
+      allcombs<-c()
+      for (i in 1:N){
+        for (j in i:N){
+          allcombs<-c(allcombs, paste(paste("l",1:N,sep="_")[i],paste("l",1:N,sep="_")[j], sep="x"))
+        }
+      }
+      
+      tableslected2<-table(factor(paste(gasols$Mates[,1],gasols$Mates[,2], sep="x"), levels=allcombs))
+      tableslected2<- sort(tableslected2[tableslected2>0], decreasing=T)
+      
+      #library(scatterplot3d)
+      
+      
+      PCK<-svd(K)
+      PCK<-K%*%PCK$v
+      library(scatterplot3d)
+      s <- scatterplot3d(PCK[,1],PCK[,2],ebvs,cex.symbols=log(tableslected+1.3), 
+                         highlight.3d = TRUE,  angle = 120,
+                         col.axis = "blue", col.grid = "lightblue", cex.axis = 1.3,
+                         cex.lab = 1.1, pch = 16,type = "h", 
+                         main = paste("N = ", N, ", ImpVar = ", round(impvar,3), ", ImpInbreed = ",round(impforinbreed,3),"\n I:" ,round(gasols$Stats$I,3)," G:" ,round(gasols$Stats$G,3)," U:" ,round(gasols$Stats$U,3),sep=""),xlab="PC1", ylab="PC2", zlab="BV")
+      legend(s$xyz.convert(min(PCK[,1])-.3, max(PCK[,2])+.3, mean(ebvs)-6*sd(ebvs)), yjust=-5,xjust=0,
+             legend = paste(as.character(names(tableslected2)),as.character((tableslected2)), sep=" : "), cex = .4)
+      
+      for (i in 1:nrow(PCK)){
+        cordtext<- s$xyz.convert(PCK[i,1]+.05,PCK[i,2]+.05,ebvs[i]+1)
+        if (tableslected[i]>0){text(cordtext$x, cordtext$y,names(tableslected)[i])}
+      }
+      ## now draw a line between points 2 and 3
+      
+      for (i in 1:nrow(gasols$Mates)){
+        print(i)
+        p2 <- s$xyz.convert(PCK[rownames(PCK)%in%c(gasols$Mates[i,1]),1],PCK[rownames(PCK)%in%c(gasols$Mates[i,1]),2],ebvs[rownames(PCK)%in%c(gasols$Mates[i,1])])
+        p3 <- s$xyz.convert(PCK[rownames(PCK)%in%c(gasols$Mates[i,2]),1],PCK[rownames(PCK)%in%c(gasols$Mates[i,2]),2],ebvs[rownames(PCK)%in%c(gasols$Mates[i,2])])
+        segments(p2$x,p2$y,p3$x,p3$y,lwd=2,col=1)
+      }
+    }
+  }
+  ani.pause() }
+  , movie.name = "circle.gif",
+  ani.width = 600, ani.height = 600)
+
+#####################################

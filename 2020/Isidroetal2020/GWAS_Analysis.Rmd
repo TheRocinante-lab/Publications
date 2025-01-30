@@ -1,0 +1,358 @@
+---
+title: "GWAS analysis 2017-2019"
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r zero, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, eval = TRUE,fig.width = 8,fig.height=6)
+```
+
+
+
+```{r,one, echo=FALSE,collapse=TRUE,message=FALSE,warning=FALSE}
+rm(list=ls())
+#setwd("C:/Users/JIS/Desktop/New folder")
+setwd("~/Dropbox/Akdemir-Sanchez/JULIO/GWAS_OATS/Project_GWAS")
+packages <- c( "openxlsx","png","gapminder",
+              "BLR","ggpubr","corrplot","RNOmni", "knitr", "ggrepel","EMMREML","STPGA","sommer","stringi","knitr","readxl","stringr","gridExtra","ggfortify","factoextra","FactoMineR","cluster","tables","kableExtra","beeswarm","ggpmisc","egg","rrBLUP","Hmisc","reshape","GLMMadaptive","PerformanceAnalytics","ggpubr","igraph","tidyverse","extrafont","extrafontdb")
+package.check <- lapply(packages, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+
+load("Datareadybefore_Gwas.RData")
+pheno <- as.data.frame(pheno)
+genoGWAS <- as.data.frame(genoGWAS)
+```
+
+
+
+```{r,two, echo=FALSE,collapse=TRUE,message=FALSE,warning=FALSE,eval=FALSE}
+library(rrBLUP)
+pheno[1:5,c(5:24)]
+gwasresults_Height <-GWAS(pheno[,c(5,12)],genoGWAS,K=K.mat,n.PC=19,plot=T)
+gwasresults_Lodging <- GWAS(pheno[,c(5,13)],genoGWAS,K=K.mat,n.PC=1,plot=F) 
+gwasresults_BYDV <- GWAS(pheno[,c(5,15)],genoGWAS,K=K.mat,n.PC=2,plot=F)
+gwasresults_DTB <- GWAS(pheno[,c(5,16)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_DTH <- GWAS(pheno[,c(5,17)],genoGWAS,K=K.mat,n.PC=10,plot=F)
+gwasresults_DTA <- GWAS(pheno[,c(5,18)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_DTPM <-GWAS(pheno[,c(5,19)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_TKW <- GWAS(pheno[,c(5,20)],genoGWAS,K=K.mat,n.PC=12,plot=F)
+
+###################### Q+K ##########################################
+gwasresults_SUM <- GWAS(pheno[,c(5,24)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_T2 <- GWAS(pheno[,c(5,26)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_HT2 <- GWAS(pheno[,c(5,27)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_Fungal <- GWAS(pheno[,c(5,36)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+
+gwasresults_SUM_trans <- GWAS(pheno[,c(5,28)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_T2_trans <- GWAS(pheno[,c(5,29)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_HT2_trans <- GWAS(pheno[,c(5,30)],genoGWAS,K=K.mat,n.PC=6,plot=F)
+gwasresults_Fungal_trans <- GWAS(pheno[,c(5,38)],genoGWAS,K=K.mat,n.PC=12,plot=F)
+
+###################### K ##########################################
+gwasresults_SUM_K <- GWAS(pheno[,c(5,24)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_T2_K <- GWAS(pheno[,c(5,26)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_HT2_K <- GWAS(pheno[,c(5,27)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_Fungal_K <- GWAS(pheno[,c(5,36)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+
+gwasresults_SUM_trans_K <- GWAS(pheno[,c(5,28)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_T2_trans_K <- GWAS(pheno[,c(5,29)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_HT2_trans_K <- GWAS(pheno[,c(5,30)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+gwasresults_Fungal_trans_K <- GWAS(pheno[,c(5,38)],genoGWAS,K=K.mat,n.PC=0,plot=F)
+
+###################### PC ##########################################
+gwasresults_SUM_PC <- GWAS(pheno[,c(5,24)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_T2_PC <- GWAS(pheno[,c(5,26)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_HT2_PC <- GWAS(pheno[,c(5,27)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_Fungal_PC <- GWAS(pheno[,c(5,36)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=12,plot=F)
+
+gwasresults_SUM_trans_PC <- GWAS(pheno[,c(5,28)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_T2_trans_PC <- GWAS(pheno[,c(5,29)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_HT2_trans_PC <- GWAS(pheno[,c(5,30)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=6,plot=F)
+gwasresults_Fungal_trans_PC <- GWAS(pheno[,c(5,38)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=12,plot=F)
+
+###################### naive ##########################################
+gwasresults_SUM_naive <- GWAS(pheno[,c(5,24)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_T2_naive <- GWAS(pheno[,c(5,26)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_HT2_naive <- GWAS(pheno[,c(5,27)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_Fungal_naive <- GWAS(pheno[,c(5,36)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+
+gwasresults_SUM_trans_naive <- GWAS(pheno[,c(5,28)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_T2_trans_naive <- GWAS(pheno[,c(5,29)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_HT2_trans_naive <- GWAS(pheno[,c(5,30)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+gwasresults_Fungal_trans_naive <- GWAS(pheno[,c(5,38)],genoGWAS,K=diag(nrow(genoGWAS)),n.PC=0,plot=F)
+
+save.image("Gwas_all_resultsnographing.RData")
+```
+
+
+
+```{r,three, echo=T,include=FALSE}
+source("manhattanfunction.R")
+source("qqplot_function.R")
+load("Gwas_all_resultsnographing.RData")
+source("multiplot.R")
+```
+
+```{r,four, collapse=TRUE,message=FALSE,warning=FALSE,include=FALSE}
+#The value of the FDR was calculated with FDRFucntion_check GWAS_V1.Rmd for more info in old code folder#
+#FDR_Height<- -log10(FDR(10^(-gwasresults_Height$Height),0.05)) # INF#
+
+####################3 NO TRANSFORM DATA #####################
+####################3 NO TRANSFORM DATA #####################
+####################3 NO TRANSFORM DATA #####################
+
+SUM <- manhattan_fun(gwasresults_SUM,4.29,c(0,8),"Sum T-2 & HT-2")
+T2 <- manhattan_fun(gwasresults_T2,4.29,c(0,8),"T-2")
+HT2 <- manhattan_fun(gwasresults_HT2,4.29,c(0,8),"HT-2")
+Fungal <- manhattan_fun(gwasresults_Fungal,4.29,c(0,8),"Fungal Biomass")
+
+SUM_K <- manhattan_fun(gwasresults_SUM_K,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_K <- manhattan_fun(gwasresults_T2_K,4.29,c(0,8),"T-2")
+HT2_K <- manhattan_fun(gwasresults_HT2_K,4.29,c(0,8),"HT-2")
+Fungal_K <- manhattan_fun(gwasresults_Fungal_K,4.29,c(0,8),"Fungal Biomass")
+
+SUM_PC <- manhattan_fun(gwasresults_SUM_PC,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_PC <- manhattan_fun(gwasresults_T2_PC,4.29,c(0,8),"T-2")
+HT2_PC <- manhattan_fun(gwasresults_HT2_PC,4.29,c(0,8),"HT-2")
+Fungal_PC <- manhattan_fun(gwasresults_Fungal_PC,4.29,c(0,8),"Fungal Biomass")
+
+SUM_naive <- manhattan_fun(gwasresults_SUM_naive,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_naive <- manhattan_fun(gwasresults_T2_naive,4.29,c(0,8),"T-2")
+HT2_naive <- manhattan_fun(gwasresults_HT2_naive,4.29,c(0,8),"HT-2")
+Fungal_naive<- manhattan_fun(gwasresults_Fungal_naive,4.29,c(0,8),"Fungal Biomass")
+
+####################TRANSFORM DATA #####################
+####################TRANSFORM DATA #####################
+####################TRANSFORM DATA #####################
+
+SUM_trans <- manhattan_fun(gwasresults_SUM_trans,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_trans <- manhattan_fun(gwasresults_T2_trans,4.29,c(0,8),"T-2")
+HT2_trans <- manhattan_fun(gwasresults_HT2_trans,4.29,c(0,8),"HT-2")
+Fungal_trans <- manhattan_fun(gwasresults_Fungal_trans,4.29,c(0,8),"Fungal Biomass")
+
+pdf("Manhattan.pdf",width=12,height=8)
+multiplot(SUM_trans,T2_trans,HT2_trans,Fungal_trans,cols = 2)
+dev.off()
+
+SUM_K_trans <- manhattan_fun(gwasresults_SUM_trans_K ,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_K_trans <- manhattan_fun(gwasresults_T2_trans_K ,4.29,c(0,8),"T-2")
+HT2_K_trans <- manhattan_fun(gwasresults_HT2_trans_K ,4.29,c(0,8),"HT-2")
+Fungal_K_trans <- manhattan_fun(gwasresults_Fungal_trans_K ,4.29,c(0,8),"Fungal Biomass")
+
+SUM_PC_trans <- manhattan_fun(gwasresults_SUM_trans_PC,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_PC_trans <- manhattan_fun(gwasresults_T2_trans_PC,4.29,c(0,8),"T-2")
+HT2_PC_trans <- manhattan_fun(gwasresults_HT2_trans_PC,4.29,c(0,8),"HT-2")
+Fungal_PC_trans <- manhattan_fun(gwasresults_Fungal_trans_PC,4.29,c(0,8),"Fungal Biomass")
+
+SUM_naive_trans <- manhattan_fun(gwasresults_SUM_trans_naive,4.29,c(0,8),"Sum T-2 & HT-2")
+T2_naive_trans <- manhattan_fun(gwasresults_T2_trans_naive,4.29,c(0,8),"T-2")
+HT2_naive_trans <- manhattan_fun(gwasresults_HT2_trans_naive,4.29,c(0,8),"HT-2")
+Fungal_naive_trans<- manhattan_fun(gwasresults_Fungal_trans_naive,4.29,c(0,8),"Fungal Biomass")
+
+```
+# Figures
+```{r five,collapse=TRUE,message=FALSE,warning=FALSE,include=FALSE}
+a <- ggarrange(SUM,T2,HT2,Fungal, ncol = 2, nrow = 2)
+b <- ggarrange(SUM_K,T2_K,HT2_K,Fungal_K, ncol = 2, nrow = 2)
+c <- ggarrange(SUM_PC,T2_PC,HT2_PC,Fungal_PC, ncol = 2, nrow = 2)
+d <- ggarrange(SUM_naive,T2_naive,HT2_naive,Fungal_naive, ncol = 2, nrow = 2)
+e <- ggarrange(SUM_trans,T2_trans,HT2_trans,Fungal_trans, ncol = 2, nrow = 2)
+f <- ggarrange(SUM_K_trans,T2_K_trans,HT2_K_trans,Fungal_K_trans, ncol = 2, nrow = 2)
+g <- ggarrange(SUM_PC_trans,T2_PC_trans,HT2_PC_trans,Fungal_PC_trans, ncol = 2, nrow = 2)
+h <- ggarrange(SUM_naive_trans,T2_naive_trans,HT2_naive_trans,Fungal_naive_trans, ncol = 2, nrow = 2)
+```
+
+```{r six ,collapse=TRUE,message=FALSE,warning=FALSE,fig.width=12,fig.height=8}
+annotate_figure(a,top=text_grob("Q+K No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 1") 
+annotate_figure(b,top=text_grob("K No transform data",color = "red", 
+                                face = "bold", size = 14), fig.lab = "Figure 2")
+annotate_figure(c,top=text_grob("PC No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 3")
+annotate_figure(d,top=text_grob("Naive No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 4")
+annotate_figure(e,top=text_grob("Q+K transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 5") 
+annotate_figure(f,top=text_grob("K transform data",color = "blue", 
+                                face = "bold", size = 14), fig.lab = "Figure 6")
+annotate_figure(g,top=text_grob("PC transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 7")
+annotate_figure(h,top=text_grob("Naive transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 8")
+
+```
+
+### QQplot Diseases
+```{r,seven, echo=FALSE,warning=FALSE}
+qqplot_SUM <- quantileplot (gwasresults_SUM$SUM.T2.HT2,"SUM T-2 & HT-2")
+qqplot_T2 <- quantileplot (gwasresults_T2$T.2,"T-2")
+qqplot_HT2 <- quantileplot (gwasresults_HT2$HT.2,"HT-2")
+qqplot_Fungal <- quantileplot (gwasresults_Fungal$Fungal1,"Fungal Biomass")
+
+qqplot_SUM_trans <- quantileplot (gwasresults_SUM_trans$Sum_transf,"SUM T-2 & HT-2")
+qqplot_T2_trans <- quantileplot (gwasresults_T2_trans$T2_Transf,"T-2")
+qqplot_HT2_trans <- quantileplot (gwasresults_HT2_trans$HT2_Trans,"HT-2")
+qqplot_Fungal_trans <- quantileplot (gwasresults_Fungal_trans$Fungal_tran,"Fungal Biomass")
+
+qqplot_SUM_PC <- quantileplot (gwasresults_SUM_PC$SUM.T2.HT2,"SUM T-2 & HT-2")
+qqplot_T2_PC <- quantileplot (gwasresults_T2_PC$T.2,"T-2")
+qqplot_HT2_PC <- quantileplot (gwasresults_HT2_PC$HT.2,"HT-2")
+qqplot_Fungal_PC <- quantileplot (gwasresults_Fungal_PC$Fungal1,"Fungal Biomass")
+
+qqplot_SUM_trans_PC <- quantileplot (gwasresults_SUM_trans_PC$Sum_transf,"SUM T-2 & HT-2")
+qqplot_T2_trans_PC <- quantileplot (gwasresults_T2_trans_PC$T2_Transf,"T-2")
+qqplot_HT2_trans_PC <- quantileplot (gwasresults_HT2_trans_PC$HT2_Trans,"HT-2")
+qqplot_Fungal_trans_PC <- quantileplot (gwasresults_Fungal_trans_PC$Fungal_tran,"Fungal Biomass")
+
+qqplot_SUM_K <- quantileplot (gwasresults_SUM_K$SUM.T2.HT2,"SUM T-2 & HT-2")
+qqplot_T2_K <- quantileplot (gwasresults_T2_K$T.2,"T-2")
+qqplot_HT2_K <- quantileplot (gwasresults_HT2_K$HT.2,"HT-2")
+qqplot_Fungal_K <- quantileplot (gwasresults_Fungal_K$Fungal1,"Fungal Biomass")
+
+qqplot_SUM_trans_K <- quantileplot (gwasresults_SUM_trans_K$Sum_transf,"SUM T-2 & HT-2")
+qqplot_T2_trans_K <- quantileplot (gwasresults_T2_trans_K$T2_Transf,"T-2")
+qqplot_HT2_trans_K <- quantileplot (gwasresults_HT2_trans_K$HT2_Trans,"HT-2")
+qqplot_Fungal_trans_K <- quantileplot (gwasresults_Fungal_trans_K$Fungal_tran,"Fungal Biomass")
+
+
+qqplot_SUM_naive <- quantileplot (gwasresults_SUM_naive$SUM.T2.HT2,"SUM T-2 & HT-2")
+qqplot_T2_naive <- quantileplot (gwasresults_T2_naive$T.2,"T-2")
+qqplot_HT2_naive <- quantileplot (gwasresults_HT2_naive$HT.2,"HT-2")
+qqplot_Fungal_naive <- quantileplot (gwasresults_Fungal_naive$Fungal1,"Fungal Biomass")
+
+qqplot_SUM_trans_naive <- quantileplot (gwasresults_SUM_trans_naive$Sum_transf,"SUM T-2 & HT-2")
+qqplot_T2_trans_naive <- quantileplot (gwasresults_T2_trans_naive$T2_Transf,"T-2")
+qqplot_HT2_trans_naive <- quantileplot (gwasresults_HT2_trans_naive$HT2_Trans,"HT-2")
+qqplot_Fungal_trans_naive <- quantileplot (gwasresults_Fungal_trans_naive$Fungal_tran,"Fungal Biomass")
+
+
+```
+
+```{r eight,collapse=TRUE,message=FALSE,warning=FALSE,include=FALSE}
+
+i <- ggarrange(qqplot_SUM,qqplot_T2,qqplot_HT2, qqplot_Fungal, ncol = 2, nrow = 2)
+j <- ggarrange(qqplot_SUM_K,qqplot_T2_K,qqplot_HT2_K, qqplot_Fungal_K, ncol = 2, nrow = 2)
+k <- ggarrange(qqplot_SUM_PC,qqplot_T2_PC,qqplot_HT2_PC, qqplot_Fungal_PC, ncol = 2, nrow = 2)
+l <- ggarrange(qqplot_SUM_naive,qqplot_T2_naive,qqplot_HT2_naive, qqplot_Fungal_naive, ncol = 2, nrow = 2)
+
+m <- ggarrange(qqplot_SUM_trans,qqplot_T2_trans,qqplot_HT2_trans, qqplot_Fungal_trans, ncol = 2, nrow = 2)
+n <- ggarrange(qqplot_SUM_trans_K,qqplot_T2_trans_K,qqplot_HT2_trans_K, qqplot_Fungal_trans_K, ncol = 2, nrow = 2)
+o <- ggarrange(qqplot_SUM_trans_PC,qqplot_T2_trans_PC,qqplot_HT2_trans_PC, qqplot_Fungal_trans_PC, ncol = 2, nrow = 2)
+p <- ggarrange(qqplot_SUM_trans_PC,qqplot_T2_trans_PC,qqplot_HT2_trans_PC, qqplot_Fungal_trans_PC, ncol = 2, nrow = 2)
+```
+
+
+
+```{r, nine,collapse=TRUE,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+annotate_figure(i,top=text_grob("Q+K No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 1") 
+annotate_figure(j,top=text_grob("K No transform data",color = "red", 
+                                face = "bold", size = 14), fig.lab = "Figure 2")
+annotate_figure(k,top=text_grob("PC No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 3")
+annotate_figure(l,top=text_grob("Naive No transform data",color = "red", 
+                                face = "bold", size = 14),fig.lab = "Figure 4")
+
+annotate_figure(m,top=text_grob("Q+K transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 5") 
+annotate_figure(n,top=text_grob("K transform data",color = "blue", 
+                                face = "bold", size = 14), fig.lab = "Figure 6")
+annotate_figure(o,top=text_grob("PC transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 7")
+annotate_figure(p,top=text_grob("Naive transform data",color = "blue", 
+                                face = "bold", size = 14),fig.lab = "Figure 8")
+
+
+```
+
+
+
+```{r}
+library("PerformanceAnalytics")
+
+
+
+
+map[map$Locus=="avgbs_cluster_1582.1.15",]
+gwasresults_SUM_trans[gwasresults_SUM_trans$marker=="avgbs_cluster_1582.1.15",]
+gwasresults_SUM_trans[gwasresults_SUM_trans$marker=="avgbs_6K_78935.1.56",]
+gwasresults_SUM_trans[gwasresults_SUM_trans$marker=="avgbs_6K_95238.1.55",]
+gwasresults_SUM_trans[gwasresults_SUM_trans$marker=="avgbs_100100.1.64",]
+gwasresults_SUM_trans[gwasresults_SUM_trans$marker=="avgbs_114613.1.46",]
+
+which(colnames(genoimputed)=="avgbs_cluster_1582.1.15")
+which(colnames(genoimputed)=="avgbs_6K_78935.1.56")
+which(colnames(genoimputed)=="avgbs_6K_95238.1.55")
+which(colnames(genoimputed)=="avgbs_100100.1.64")
+which(colnames(genoimputed)=="avgbs_114613.1.46")
+
+markers.hit<- genoimputed[,c(2435,1639,1652,4,339)]
+corre_sign <- cor(markers.hit,use="complete.obs")
+
+chart.Correlation(markers.hit, histogram=TRUE, pch=19)
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = corre_sign, col = col, symm = TRUE)
+correlation <- data.frame(M1.15=genoimputed[,2435],M2.1.56=genoimputed[,1639],M3.1.55=genoimputed[,1652], M4.1.64=genoimputed[,4],
+                          M5.1.46=genoimputed[,339])
+
+### GGPLOT
+melted_cormat <- melt(corre_sign)
+ggplot(data = melted_cormat, aes(x=X1, y=X2, fill=value)) +
+  geom_tile()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 10, color="black",hjust = 1),
+    axis.text.y = element_text( color="black", 
+                           size=10, angle=0))+
+  labs(x="Significant Markers",y="Significant Markers")+
+  coord_fixed()
+
+library(ggcorrplot)
+ggcorrplot(corre_sign, hc.order = TRUE, type = "lower",
+   outline.col = "white",
+   ggtheme = ggplot2::theme_gray,
+   colors = c("#6D9EC1", "white", "#E46726"),lab=T)+
+  labs(title="Correlation between significant markers")
+ggsave("Correlation.png",dpi=300)
+```
+
+# Other traits GWAS analysis
+```{r}
+DTB <- manhattan_fun(gwasresults_DTB,4.29,c(0,8),"DTB")
+DTA <- manhattan_fun(gwasresults_DTA,4.29,c(0,8),"DTA")
+DTH <- manhattan_fun(gwasresults_DTH,4.29,c(0,8),"DTH")
+DTPM <- manhattan_fun(gwasresults_DTPM,4.29,c(0,8),"DTPM")
+
+BYDV <- manhattan_fun(gwasresults_BYDV,4.29,c(0,8),"BYDV")
+Height <- manhattan_fun(gwasresults_Height,4.29,c(0,8),"Height")
+Lodging <- manhattan_fun(gwasresults_Lodging,4.29,c(0,8),"Lodging")
+
+
+traits <- ggarrange(DTB,DTA,DTH,DTPM, ncol = 2, nrow = 2)
+annotate_figure(traits,top=text_grob("Q+K",color = "red", 
+                  face = "bold", size = 14),fig.lab = "Figure Phenological traits") 
+ggsave("traits.pdf",width=17,height=17, units="cm",dpi=300)
+
+traits2 <- ggarrange(BYDV,Height,Lodging,ncol = 2, nrow = 2)
+annotate_figure(traits2,top=text_grob("Q+K",color = "red", 
+                                     face = "bold", size = 14),fig.lab = "Figure other traits")
+ggsave("traits2.pdf",width=17,height=17, units="cm",dpi=300)
+
+
+
+
+```
+
+
+```{r}
+save.image("GWAS_results_and_graphs.RData")
+```
+
+

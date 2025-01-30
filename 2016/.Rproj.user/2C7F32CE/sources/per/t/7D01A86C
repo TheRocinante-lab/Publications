@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1533067440692.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3448829258",
+    "id" : "7D01A86C",
+    "lastKnownWriteTime" : 1529863810,
+    "last_content_update" : 1529863810,
+    "path" : "~/Dropbox/GenomicMating/Demonstrations.R",
+    "project_path" : null,
+    "properties" : {
+        "cursorPosition" : "60,56",
+        "scrollLine" : "0"
+    },
+    "relative_order" : 2,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

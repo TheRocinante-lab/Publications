@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1533068143601.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3732961852",
+    "id" : "EC87B764",
+    "lastKnownWriteTime" : 1524962879,
+    "last_content_update" : 1524962879,
+    "path" : "~/Dropbox/SelectionofTrainingPopulations/DATA ARTICLE/WheatDataSets/download_CKHQ/AnalysisOfWheatData.R",
+    "project_path" : null,
+    "properties" : {
+        "cursorPosition" : "30,0",
+        "scrollLine" : "0"
+    },
+    "relative_order" : 4,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}
