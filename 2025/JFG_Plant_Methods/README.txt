@@ -1,5 +1,7 @@
-This is the code supplementing the publication titled: Optimizing Fully-Efficient Two-Stage Models for Genomic Selection Using Open-Source Software
-Authors: Javier Fernández-González, Julio Isidro-Sánchez
+This is the code supplementing the following publication:
+
+Fernández-González, J., Isidro y Sánchez, J. (2025). Optimizing fully-efficient two-stage models for genomic selection using open-source software.
+Plant Methods 21, 9. https://doi.org/10.1186/s13007-024-01318-9
 
 
 Contents:
