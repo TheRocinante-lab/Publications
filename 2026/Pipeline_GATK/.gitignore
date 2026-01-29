@@ -1,0 +1,97 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+.RDataTmp
+
+# User-specific files
+.Ruserdata
+
+# Example code in package build process
+*-Ex.R
+
+# Output files from R CMD build
+/*.tar.gz
+
+# Output files from R CMD check
+/*.Rcheck/
+
+# RStudio files
+.Rproj.user/
+
+# produced vignettes
+vignettes/*.html
+vignettes/*.pdf
+
+# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
+.httr-oauth
+
+# knitr and R markdown default cache directories
+*_cache/
+/cache/
+
+# Temporary files created by R markdown
+*.utf8.md
+*.knit.md
+
+# R Environment Variables
+.Renviron
+
+# pkgdown site
+docs/
+
+# translation temp files
+po/*~
+
+# RStudio Connect folder
+rsconnect/
+
+*.png
+*.pdf
+*.html
+*.RData
+ProcessedVCFs/
+*.csv
+*.vcf
+*.vcf.gz
+
+
+PhenoData/
+DataforPillar/
+documentation/
+GenotypeTables/
+DataforPillarApr26/
+May27thGWASAnalysisMAF0_1/
+May27thGWASAnalysisMAF0_1 _withLD/
+May27thGWASAnalysisMAF0_05/
+Presentations/
+ProcessedVCFs/
+Rscripts/
+
+pcaplot100withnamesinPheno.png
+
+*.png
+*.pdf
+*.html
+*.RData
+*.csv
+*.vcf
+PrepDataforGP.R 
+
+May27thGWASAnalysisMAF0_05/
+PrepGwasDataGreenHouse_0_05.r 
+May27thGWASAnalysisMAF0_1/
+PrepGwasDataPillarsTraits_0_05.r 
+.DS_Store
+
+CrossValidationExperiments.R
+
+Rscripts/*.*
+PrepDataforGP.R
+Rscripts/GenomicPrediction/*.*
+
+May27thGWASAnalysisMAF0_05/*.*
+May27thGWASAnalysisMAF0_1/*.*
+
